@@ -1,6 +1,6 @@
 -- ЛОКАЛЬНАЯ СТРОИТЕЛЬНАЯ СИСТЕМА (полная: брики, цемент, клей, резак, болгарка, обои, ковер, краска,
 -- молоток, кувалда, веревка, дверь, окна, фундамент, потолок, физическая мебель, губка, C4, провода, трубы)
--- ПК + телефон. Вставить целиком в: StarterPlayer > StarterPlayerScripts > LocalScript
+-- ПК + телефон (адаптивный UI + кнопка сворачивания меню). Вставить целиком в: StarterPlayer > StarterPlayerScripts > LocalScript
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -105,6 +105,17 @@ local SMASHABLE = { Brick = true, Board = true, Wall = true, Window = true, Door
 
 -- ================= GUI =================
 local gui = create("ScreenGui", { Name = "BuildGui", ResetOnSpawn = false }, player:WaitForChild("PlayerGui"))
+
+-- АДАПТИВНЫЙ МАСШТАБ UI: на маленьких экранах (телефоны) интерфейс мельче
+local uiScale = Instance.new("UIScale")
+uiScale.Parent = gui
+local function updateGuiScale()
+    local vp = camera.ViewportSize
+    local shortSide = math.min(vp.X, vp.Y) -- короткая сторона экрана
+    uiScale.Scale = math.clamp(shortSide / 800, 0.5, 1.1)
+end
+updateGuiScale()
+camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateGuiScale)
 
 local function makeButton(parent, text, size, pos)
     return create("TextButton", {
@@ -1780,7 +1791,7 @@ local function exitC4Held()
     State.C4Held = nil
 end
 
--- ================= ВЕРЕВКА (хелперы) =================
+-- ================= ВЕРЕВКА =================
 local Rope = {}
 
 function Rope.destroyPreview()
@@ -2278,7 +2289,7 @@ function MD.rope(hit)
             showHint("ВЕРЕВКА: ТЕПЕРЬ ЛКМ ПО ВТОРОМУ ОБЪЕКТУ | ESC — ОТМЕНА")
         elseif State.RopeSel.part and State.RopeSel.part.Parent then
             local a = State.RopeSel
-            -- удаляем неоновую линию-предпросмотр ДО создания веревки
+            -- удаляем линию-предпросмотр ДО создания веревки
             Rope.destroyPreview()
             if hit.Instance ~= a.part then
                 local att0 = Instance.new("Attachment")
@@ -2624,7 +2635,7 @@ end
 
 function Frame.ropePreview(hit)
     if State.Mode == "Rope" and State.RopeSel then
-        -- временная линия выбора: тонкая веревочная (НЕ неон), видна только пока выбираешь второй объект
+        -- тонкая веревочная линия выбора (НЕ неон), видна только пока выбираешь второй объект
         local rp = State.RopePreview
         if not rp or not rp.Parent then
             rp = create("Part", {
@@ -2948,7 +2959,6 @@ if UI.btnR then
             resetModes()
         end
     end)
-    -- левая половина кнопки = ниже, правая = выше
     UI.btnDown.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.Touch
             or input.UserInputType == Enum.UserInputType.MouseButton1 then
@@ -3037,6 +3047,16 @@ end)
 player.CharacterAdded:Connect(function()
     task.wait(0.2)
     resetModes()
+end)
+
+-- кнопка свернуть/развернуть меню (удобно на телефоне)
+local collapseBtn = makeButton(gui, "☰", UDim2.new(0, 36, 0, 36), UDim2.new(0, 8, 1, -46))
+local menuOpen = true
+collapseBtn.MouseButton1Click:Connect(function()
+    menuOpen = not menuOpen
+    bar.Visible = menuOpen
+    panelHolder.Visible = menuOpen
+    collapseBtn.Text = menuOpen and "☰" or "▢"
 end)
 
 -- начальное состояние
