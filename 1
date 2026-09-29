@@ -1,0 +1,3045 @@
+-- ЛОКАЛЬНАЯ СТРОИТЕЛЬНАЯ СИСТЕМА (полная: брики, цемент, клей, резак, болгарка, обои, ковер, краска,
+-- молоток, кувалда, веревка, дверь, окна, фундамент, потолок, физическая мебель, губка, C4, провода, трубы)
+-- ПК + телефон. Вставить целиком в: StarterPlayer > StarterPlayerScripts > LocalScript
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local Debris = game:GetService("Debris")
+
+local player = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+
+local isTouch = UserInputService.TouchEnabled
+local Limits = {
+    paint = isTouch and 2200 or 5000,
+    cement = isTouch and 420 or 700,
+    roll = isTouch and 700 or 1200,
+    wire = isTouch and 800 or 1500,
+    pipe = isTouch and 500 or 800,
+}
+
+-- ================= УТИЛИТЫ =================
+local function create(className, props, parent)
+    local inst = Instance.new(className)
+    for k, v in pairs(props) do
+        inst[k] = v
+    end
+    inst.Parent = parent
+    return inst
+end
+
+local function getOrCreateFolder(name)
+    local f = workspace:FindFirstChild(name)
+    if not f then
+        f = Instance.new("Folder")
+        f.Name = name
+        f.Parent = workspace
+    end
+    return f
+end
+
+local Fol = {
+    construction = getOrCreateFolder("Build_Construction"),
+    cement = getOrCreateFolder("Build_Cement"),
+    glue = getOrCreateFolder("Build_Glue"),
+    carpet = getOrCreateFolder("Build_Carpet"),
+    paint = getOrCreateFolder("Build_Paint"),
+    wallpaper = getOrCreateFolder("Build_Wallpaper"),
+    wires = getOrCreateFolder("Build_Wires"),
+    pipes = getOrCreateFolder("Build_Pipes"),
+    fx = getOrCreateFolder("Build_FX"),
+    tool = getOrCreateFolder("Build_ToolVisual"),
+}
+
+local resetModes -- forward declaration
+
+-- ================= СОСТОЯНИЕ =================
+local State = {
+    CurrentTab = "Bricks",
+    Mode = "None",
+    HoveredPart = nil,
+    MouseHit = nil,
+    IsDragging = false,
+    Drag = nil,
+    IsCutting = false,
+    Cut = nil,
+    GrinderActive = false,
+    Grinding = false,
+    Grind = nil,
+    Roll = nil,
+    Rolling = false,
+    IsPainting = false,
+    PaintTool = "Brush",
+    PaintColor = nil,
+    WallpaperColor = nil,
+    CarpetColor = nil,
+    Cementing = false,
+    LastCementPos = nil,
+    LastCementNrm = nil,
+    Stroke = nil,
+    Hammer = nil,
+    HammerSwing = nil,
+    Sledge = nil,
+    Sponge = nil,
+    Cleaning = false,
+    C4Held = nil,
+    RopeSel = nil,
+    RopePreview = nil,
+    NodeLast = nil,
+    LinePreview = nil,
+    Freeze = nil,
+    Place = nil,
+    CleanupEnabled = true,
+}
+
+local rHeld = false
+local mountScanAcc = 0
+
+local BRICK_COLOR = Color3.fromRGB(168, 86, 60)
+local PAINTABLE = { Brick = true, Board = true, Wall = true, Foundation = true, Ceiling = true }
+local WALLABLE = { Wall = true, Brick = true, Board = true, Foundation = true, Ceiling = true }
+local SMASHABLE = { Brick = true, Board = true, Wall = true, Window = true, Door = true,
+    Foundation = true, Scrap = true, Ceiling = true, Furniture = true }
+
+-- ================= GUI =================
+local gui = create("ScreenGui", { Name = "BuildGui", ResetOnSpawn = false }, player:WaitForChild("PlayerGui"))
+
+local function makeButton(parent, text, size, pos)
+    return create("TextButton", {
+        Size = size, Position = pos, Text = text,
+        BackgroundColor3 = Color3.fromRGB(55, 55, 60),
+        TextColor3 = Color3.fromRGB(235, 235, 235),
+        Font = Enum.Font.SourceSansBold, TextSize = 16,
+        BorderSizePixel = 2, BorderColor3 = Color3.fromRGB(110, 110, 116),
+        AutoButtonColor = true,
+    }, parent)
+end
+
+local UI = {}
+UI.hint = create("TextLabel", {
+    Size = UDim2.new(0, 700, 0, 30), Position = UDim2.new(0.5, -350, 0, 50),
+    BackgroundColor3 = Color3.fromRGB(25, 25, 28), BackgroundTransparency = 0.25,
+    BorderSizePixel = 2, BorderColor3 = Color3.fromRGB(90, 90, 96),
+    TextColor3 = Color3.fromRGB(240, 240, 240),
+    Font = Enum.Font.SourceSansBold, TextSize = 15,
+    Text = "", Visible = false,
+}, gui)
+UI.progress = create("Frame", {
+    Size = UDim2.new(0, 260, 0, 18), Position = UDim2.new(0.5, -130, 0, 88),
+    BackgroundColor3 = Color3.fromRGB(25, 25, 28), BackgroundTransparency = 0.25,
+    BorderSizePixel = 2, BorderColor3 = Color3.fromRGB(90, 90, 96), Visible = false,
+}, gui)
+UI.progressFill = create("Frame", {
+    Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = Color3.fromRGB(240, 150, 50), BorderSizePixel = 0,
+}, UI.progress)
+UI.freeze = create("Frame", {
+    Size = UDim2.new(0, 260, 0, 18), Position = UDim2.new(0.5, -130, 0, 112),
+    BackgroundColor3 = Color3.fromRGB(25, 25, 28), BackgroundTransparency = 0.25,
+    BorderSizePixel = 2, BorderColor3 = Color3.fromRGB(90, 90, 96), Visible = false,
+}, gui)
+UI.freezeFill = create("Frame", {
+    Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = Color3.fromRGB(0, 190, 255), BorderSizePixel = 0,
+}, UI.freeze)
+UI.freezeLabel = create("TextLabel", {
+    Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
+    TextColor3 = Color3.fromRGB(240, 250, 255), Font = Enum.Font.SourceSansBold, TextSize = 13,
+    Text = "ЗАМОРОЗКА: 10.0",
+}, UI.freeze)
+
+local function showHint(text)
+    UI.hint.Text = text
+    UI.hint.Visible = true
+end
+
+local function hideHint()
+    UI.hint.Visible = false
+end
+
+local function showProgress()
+    UI.progress.Visible = true
+    UI.progressFill.Size = UDim2.new(0, 0, 1, 0)
+end
+
+local function hideProgress()
+    UI.progress.Visible = false
+end
+
+local bar = create("Frame", {
+    Size = UDim2.new(0, 560, 0, 46), Position = UDim2.new(0.5, -280, 1, -56),
+    BackgroundColor3 = Color3.fromRGB(35, 35, 38), BackgroundTransparency = 0.15,
+    BorderSizePixel = 2, BorderColor3 = Color3.fromRGB(100, 100, 106),
+}, gui)
+
+local TABS = {
+    { key = "Bricks", label = "БРИКИ" },
+    { key = "Cement", label = "ЦЕМЕНТ" },
+    { key = "Tools", label = "ИНСТРУМЕНТЫ" },
+    { key = "Objects", label = "ОБЪЕКТЫ" },
+}
+
+local tabButtons = {}
+for i, t in ipairs(TABS) do
+    tabButtons[t.key] = makeButton(bar, t.label, UDim2.new(0.25, 0, 1, 0), UDim2.new((i - 1) * 0.25, 0, 0, 0))
+end
+
+local panelHolder = create("Frame", {
+    Size = UDim2.new(0, 560, 0, 212), Position = UDim2.new(0.5, -280, 1, -316),
+    BackgroundTransparency = 1,
+}, gui)
+
+local panels = {}
+for _, t in ipairs(TABS) do
+    panels[t.key] = create("Frame", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundColor3 = Color3.fromRGB(30, 30, 34), BackgroundTransparency = 0.3,
+        BorderSizePixel = 2, BorderColor3 = Color3.fromRGB(90, 90, 96), Visible = false,
+    }, panelHolder)
+end
+
+local Btn = {}
+Btn.brick = makeButton(panels.Bricks, "СОЗДАТЬ КИРПИЧ", UDim2.new(0, 170, 0, 32), UDim2.new(0, 12, 0, 12))
+create("TextLabel", {
+    Size = UDim2.new(1, -24, 0, 120), Position = UDim2.new(0, 12, 0, 56),
+    BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+    TextColor3 = Color3.fromRGB(210, 210, 210), Font = Enum.Font.SourceSans, TextSize = 13, TextWrapped = true,
+    Text = "ЛКМ/ТАП на кирпич — держать/переносить. Колесо мыши (или +/− на телефоне) — выше/ниже.\nR (держать) — вращение. F — заморозка на 10 сек. Мебель — физическая.\nESC — выйти из режима. ПКМ свободна для камеры.",
+}, panels.Bricks)
+
+Btn.cement = makeButton(panels.Cement, "ЦЕМЕНТ: ВЫКЛ", UDim2.new(0, 200, 0, 32), UDim2.new(0, 12, 0, 12))
+Btn.glue = makeButton(panels.Cement, "КЛЕЙ: ВЫКЛ", UDim2.new(0, 200, 0, 32), UDim2.new(0, 222, 0, 12))
+create("TextLabel", {
+    Size = UDim2.new(1, -24, 0, 120), Position = UDim2.new(0, 12, 0, 54),
+    BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+    TextColor3 = Color3.fromRGB(210, 210, 210), Font = Enum.Font.SourceSans, TextSize = 13, TextWrapped = true,
+    Text = "ЦЕМЕНТ — широкий, для кирпичей и кладки (кирпич+кирпич тоже клеит).\nКЛЕЙ — тонкий; клик по разбитому окну вставляет стекло.\nКирпичи и мебель без крепления — свободные, физические.",
+}, panels.Cement)
+
+Btn.cutter = makeButton(panels.Tools, "РЕЗАК", UDim2.new(0, 170, 0, 32), UDim2.new(0, 12, 0, 12))
+Btn.grinder = makeButton(panels.Tools, "БОЛГАРКА", UDim2.new(0, 170, 0, 32), UDim2.new(0, 192, 0, 12))
+Btn.wallpaper = makeButton(panels.Tools, "ОБОИ", UDim2.new(0, 170, 0, 32), UDim2.new(0, 372, 0, 12))
+Btn.paint = makeButton(panels.Tools, "КРАСКА", UDim2.new(0, 170, 0, 32), UDim2.new(0, 12, 0, 52))
+Btn.hammer = makeButton(panels.Tools, "МОЛОТОК", UDim2.new(0, 170, 0, 32), UDim2.new(0, 192, 0, 52))
+Btn.sledge = makeButton(panels.Tools, "КУВАЛДА", UDim2.new(0, 170, 0, 32), UDim2.new(0, 372, 0, 52))
+Btn.rope = makeButton(panels.Tools, "ВЕРЕВКА", UDim2.new(0, 170, 0, 32), UDim2.new(0, 12, 0, 92))
+Btn.sponge = makeButton(panels.Tools, "ГУБКА (ВЕДРО)", UDim2.new(0, 170, 0, 32), UDim2.new(0, 192, 0, 92))
+Btn.c4 = makeButton(panels.Tools, "C4", UDim2.new(0, 170, 0, 32), UDim2.new(0, 372, 0, 92))
+Btn.wire = makeButton(panels.Tools, "ПРОВОД", UDim2.new(0, 170, 0, 32), UDim2.new(0, 12, 0, 132))
+Btn.pipe = makeButton(panels.Tools, "ТРУБА", UDim2.new(0, 170, 0, 32), UDim2.new(0, 192, 0, 132))
+Btn.carpet = makeButton(panels.Tools, "КОВЕР", UDim2.new(0, 170, 0, 32), UDim2.new(0, 372, 0, 132))
+Btn.cleanup = makeButton(panels.Tools, "УБОРКА ОБЛОМКОВ: ВКЛ", UDim2.new(0, 240, 0, 32), UDim2.new(0, 12, 0, 172))
+
+Btn.board = makeButton(panels.Objects, "ДОСКА", UDim2.new(0, 170, 0, 32), UDim2.new(0, 12, 0, 12))
+Btn.wall = makeButton(panels.Objects, "СТЕНА", UDim2.new(0, 170, 0, 32), UDim2.new(0, 192, 0, 12))
+Btn.door = makeButton(panels.Objects, "ДВЕРЬ", UDim2.new(0, 170, 0, 32), UDim2.new(0, 372, 0, 12))
+Btn.window = makeButton(panels.Objects, "ОКНО", UDim2.new(0, 170, 0, 32), UDim2.new(0, 12, 0, 52))
+Btn.bigWindow = makeButton(panels.Objects, "БОЛЬШ. ОКНО", UDim2.new(0, 170, 0, 32), UDim2.new(0, 192, 0, 52))
+Btn.foundation = makeButton(panels.Objects, "ФУНДАМЕНТ", UDim2.new(0, 170, 0, 32), UDim2.new(0, 372, 0, 52))
+Btn.ceiling = makeButton(panels.Objects, "ПОТОЛОК", UDim2.new(0, 170, 0, 32), UDim2.new(0, 12, 0, 92))
+Btn.table = makeButton(panels.Objects, "СТОЛ", UDim2.new(0, 170, 0, 32), UDim2.new(0, 192, 0, 92))
+Btn.chair = makeButton(panels.Objects, "СТУЛ", UDim2.new(0, 170, 0, 32), UDim2.new(0, 372, 0, 92))
+Btn.sofa = makeButton(panels.Objects, "ДИВАН", UDim2.new(0, 170, 0, 32), UDim2.new(0, 12, 0, 132))
+create("TextLabel", {
+    Size = UDim2.new(1, -24, 0, 60), Position = UDim2.new(0, 192, 0, 132),
+    BackgroundTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left,
+    TextColor3 = Color3.fromRGB(210, 210, 210), Font = Enum.Font.SourceSans, TextSize = 13, TextWrapped = true,
+    Text = "Призрак следует за мышью/пальцем — клик ставит, ESC — выйти.\nСтены/окна/фундамент/потолок — намертво. Мебель — физическая.",
+}, panels.Objects)
+
+local toolButtons = {
+    Cutter = Btn.cutter, Grinder = Btn.grinder, Wallpaper = Btn.wallpaper,
+    Paint = Btn.paint, Hammer = Btn.hammer, Sledge = Btn.sledge, Rope = Btn.rope,
+    Sponge = Btn.sponge, C4 = Btn.c4, Wire = Btn.wire, Pipe = Btn.pipe, Carpet = Btn.carpet,
+}
+
+local function updateTabButtons()
+    for key, btn in pairs(tabButtons) do
+        btn.BackgroundColor3 = (State.CurrentTab == key) and Color3.fromRGB(72, 72, 80) or Color3.fromRGB(45, 45, 50)
+    end
+end
+
+local function updateToolButtons()
+    for tool, btn in pairs(toolButtons) do
+        btn.BackgroundColor3 = (State.Mode == tool) and Color3.fromRGB(88, 122, 72) or Color3.fromRGB(55, 55, 60)
+    end
+end
+
+local function updateAdhesiveButtons()
+    Btn.cement.Text = (State.Mode == "Cement") and "ЦЕМЕНТ: ВКЛ" or "ЦЕМЕНТ: ВЫКЛ"
+    Btn.cement.BackgroundColor3 = (State.Mode == "Cement") and Color3.fromRGB(88, 122, 72) or Color3.fromRGB(55, 55, 60)
+    Btn.glue.Text = (State.Mode == "Glue") and "КЛЕЙ: ВКЛ" or "КЛЕЙ: ВЫКЛ"
+    Btn.glue.BackgroundColor3 = (State.Mode == "Glue") and Color3.fromRGB(88, 122, 72) or Color3.fromRGB(55, 55, 60)
+end
+
+local function updateCleanupButton()
+    Btn.cleanup.Text = State.CleanupEnabled and "УБОРКА ОБЛОМКОВ: ВКЛ" or "УБОРКА ОБЛОМКОВ: ВЫКЛ"
+    Btn.cleanup.BackgroundColor3 = State.CleanupEnabled and Color3.fromRGB(88, 122, 72) or Color3.fromRGB(55, 55, 60)
+end
+
+-- палитры (краска / обои / ковер)
+local Palettes = {}
+
+local function updatePaletteLocal()
+    for _, cfg in pairs(Palettes) do
+        for i, btn in ipairs(cfg.buttons) do
+            local sel = (cfg.colors[i] == cfg.get())
+            btn.BorderColor3 = sel and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(120, 120, 126)
+            btn.BorderSizePixel = sel and 3 or 2
+        end
+    end
+end
+
+local function buildPalette(cfg)
+    cfg.frame = create("Frame", {
+        Size = UDim2.new(0, 252, 0, cfg.frameH), Position = UDim2.new(1, -264, 0, 60),
+        BackgroundColor3 = Color3.fromRGB(30, 30, 34), BackgroundTransparency = 0.25,
+        BorderSizePixel = 2, BorderColor3 = Color3.fromRGB(90, 90, 96), Visible = false,
+    }, gui)
+    cfg.buttons = {}
+    for i, c in ipairs(cfg.colors) do
+        cfg.buttons[i] = create("TextButton", {
+            Size = UDim2.new(0, cfg.cell, 0, cfg.cell),
+            Position = UDim2.new(0, 12 + (i - 1) * (cfg.cell + 6), 0, 10),
+            BackgroundColor3 = c, Text = "",
+            BorderSizePixel = 2, BorderColor3 = Color3.fromRGB(120, 120, 126),
+        }, cfg.frame)
+    end
+    for i, btn in ipairs(cfg.buttons) do
+        btn.MouseButton1Click:Connect(function()
+            cfg.set(cfg.colors[i])
+            updatePaletteLocal()
+        end)
+    end
+end
+
+Palettes.paint = {
+    colors = {
+        Color3.fromRGB(196, 60, 48), Color3.fromRGB(58, 110, 200), Color3.fromRGB(70, 168, 76),
+        Color3.fromRGB(240, 240, 240), Color3.fromRGB(28, 28, 30), Color3.fromRGB(232, 200, 56),
+    },
+    cell = 32, frameH = 104,
+    get = function() return State.PaintColor end,
+    set = function(c) State.PaintColor = c end,
+}
+buildPalette(Palettes.paint)
+Palettes.paint.brush = makeButton(Palettes.paint.frame, "КИСТЬ", UDim2.new(0, 104, 0, 34), UDim2.new(0, 12, 0, 52))
+Palettes.paint.roller = makeButton(Palettes.paint.frame, "ВАЛИК", UDim2.new(0, 104, 0, 34), UDim2.new(0, 126, 0, 52))
+Palettes.paint.brush.MouseButton1Click:Connect(function()
+    State.PaintTool = "Brush"
+    updatePaletteLocal()
+end)
+Palettes.paint.roller.MouseButton1Click:Connect(function()
+    State.PaintTool = "Roller"
+    updatePaletteLocal()
+end)
+
+Palettes.wp = {
+    colors = {
+        Color3.fromRGB(226, 208, 178), Color3.fromRGB(178, 200, 220), Color3.fromRGB(170, 205, 170),
+        Color3.fromRGB(225, 180, 190), Color3.fromRGB(200, 200, 200),
+    },
+    cell = 38, frameH = 64,
+    get = function() return State.WallpaperColor end,
+    set = function(c) State.WallpaperColor = c end,
+}
+buildPalette(Palettes.wp)
+
+Palettes.carpet = {
+    colors = {
+        Color3.fromRGB(170, 60, 60), Color3.fromRGB(70, 90, 150), Color3.fromRGB(120, 120, 125),
+        Color3.fromRGB(190, 170, 140), Color3.fromRGB(90, 140, 100),
+    },
+    cell = 38, frameH = 64,
+    get = function() return State.CarpetColor end,
+    set = function(c) State.CarpetColor = c end,
+}
+buildPalette(Palettes.carpet)
+
+State.PaintColor = Palettes.paint.colors[1]
+State.WallpaperColor = Palettes.wp.colors[1]
+State.CarpetColor = Palettes.carpet.colors[1]
+
+-- экранные кнопки для телефона: R / F / X + высота переноски − / +
+if isTouch then
+    UI.mobile = create("Frame", {
+        Size = UDim2.new(0, 190, 0, 118), Position = UDim2.new(1, -200, 0.42, 0),
+        BackgroundTransparency = 1,
+    }, gui)
+    UI.btnR = makeButton(UI.mobile, "R", UDim2.new(0, 56, 0, 56), UDim2.new(0, 0, 0, 0))
+    UI.btnF = makeButton(UI.mobile, "F", UDim2.new(0, 56, 0, 56), UDim2.new(0, 64, 0, 0))
+    UI.btnX = makeButton(UI.mobile, "X", UDim2.new(0, 56, 0, 56), UDim2.new(0, 128, 0, 0))
+    UI.btnDown = makeButton(UI.mobile, "− ВЫШЕ/НИЖЕ +", UDim2.new(0, 184, 0, 44), UDim2.new(0, 0, 0, 64))
+    UI.btnDown.TextSize = 15
+    UI.btnR.TextSize = 22
+    UI.btnF.TextSize = 22
+    UI.btnX.TextSize = 22
+end
+
+-- ================= RAYCAST =================
+local rayParams = RaycastParams.new()
+rayParams.FilterType = Enum.RaycastFilterType.Exclude
+rayParams.IgnoreWater = true
+
+local function baseExcludeList()
+    return { Fol.fx, Fol.cement, Fol.glue, Fol.carpet, Fol.paint, Fol.wallpaper, Fol.wires, Fol.pipes, Fol.tool }
+end
+
+local function mouseRay(excludePart)
+    local list = baseExcludeList()
+    local char = player.Character
+    if char then table.insert(list, char) end
+    if excludePart then table.insert(list, excludePart) end
+    rayParams.FilterDescendantsInstances = list
+    local m = UserInputService:GetMouseLocation()
+    local ray = camera:ViewportPointToRay(m.X, m.Y)
+    return workspace:Raycast(ray.Origin, ray.Direction * 1000, rayParams)
+end
+
+-- ================= ПОДСВЕТКА =================
+local hoverHighlight = create("Highlight", {
+    FillTransparency = 0.65, OutlineTransparency = 0.1, Enabled = false,
+}, Fol.fx)
+
+local freezeHighlight = create("Highlight", {
+    FillColor = Color3.fromRGB(0, 190, 255), OutlineColor = Color3.fromRGB(120, 230, 255),
+    FillTransparency = 0.6, OutlineTransparency = 0, Enabled = false,
+}, Fol.fx)
+
+local function showHighlight(adornee, color)
+    hoverHighlight.Adornee = adornee
+    hoverHighlight.FillColor = color
+    hoverHighlight.OutlineColor = color
+    hoverHighlight.Enabled = true
+end
+
+local function hideHighlight()
+    hoverHighlight.Enabled = false
+    hoverHighlight.Adornee = nil
+end
+
+-- ================= КАМЕРА =================
+local cameraTween = nil
+
+local function focusCamera(targetPos, dist, height)
+    camera.CameraType = Enum.CameraType.Scriptable
+    local d = camera.CFrame.Position - targetPos
+    d = Vector3.new(d.X, 0, d.Z)
+    if d.Magnitude < 0.05 then
+        d = Vector3.new(0, 0, -1)
+    else
+        d = d.Unit
+    end
+    local pos = targetPos - d * dist + Vector3.new(0, height, 0)
+    if cameraTween then cameraTween:Cancel() end
+    cameraTween = TweenService:Create(camera, TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+        { CFrame = CFrame.lookAt(pos, targetPos) })
+    cameraTween:Play()
+end
+
+local function restoreCamera()
+    if cameraTween then
+        cameraTween:Cancel()
+        cameraTween = nil
+    end
+    camera.CameraType = Enum.CameraType.Custom
+end
+
+-- ================= ХЕЛПЕРЫ =================
+local function playSound(id, parent, volume, speed)
+    if not parent then return end
+    local s = Instance.new("Sound")
+    s.SoundId = id
+    s.Volume = volume or 0.5
+    s.PlaybackSpeed = speed or 1
+    s.Parent = parent
+    s:Play()
+    Debris:AddItem(s, 6)
+end
+
+local function capFolder(folder, maxN)
+    local kids = folder:GetChildren()
+    local excess = #kids - maxN
+    if excess <= 0 then return end
+    for i = 1, excess do
+        if not kids[i]:GetAttribute("Hidden") then
+            kids[i]:Destroy()
+        end
+    end
+end
+
+local function lighten(c, k)
+    return Color3.new(
+        math.min(c.R * k + 0.04, 1),
+        math.min(c.G * k + 0.04, 1),
+        math.min(c.B * k + 0.04, 1)
+    )
+end
+
+local function surfaceTangent(n)
+    local t = Vector3.new(0, 1, 0):Cross(n)
+    if t.Magnitude < 0.05 then
+        t = Vector3.new(1, 0, 0):Cross(n)
+    end
+    return t.Unit
+end
+
+local function makeSphereMesh(part)
+    local mesh = Instance.new("SpecialMesh")
+    mesh.MeshType = Enum.MeshType.Sphere
+    mesh.Parent = part
+    return mesh
+end
+
+local function facingYaw()
+    local look = camera.CFrame.LookVector
+    return math.atan2(-look.X, -look.Z)
+end
+
+local function spawnDust(pos, baseColor)
+    for _ = 1, 7 do
+        local s = 0.25 + math.random() * 0.3
+        local d = create("Part", {
+            Shape = Enum.PartType.Ball, Size = Vector3.new(s, s, s),
+            CFrame = CFrame.new(pos + Vector3.new((math.random() - 0.5) * 0.6, math.random() * 0.4, (math.random() - 0.5) * 0.6)),
+            Color = lighten(baseColor or Color3.fromRGB(180, 180, 180), 1.35),
+            Material = Enum.Material.SmoothPlastic, Transparency = 0.35,
+            Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false,
+        }, Fol.fx)
+        local dir = Vector3.new((math.random() - 0.5) * 4, 2 + math.random() * 3, (math.random() - 0.5) * 4)
+        TweenService:Create(d, TweenInfo.new(0.5 + math.random() * 0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            CFrame = d.CFrame + dir * 0.35,
+            Size = d.Size * 1.8, Transparency = 1,
+        }):Play()
+        Debris:AddItem(d, 0.9)
+    end
+end
+
+-- ================= ЖИЗНЕННЫЙ ЦИКЛ ОБРЕЗКОВ =================
+local function startScrapLifecycle(part)
+    local hl = create("Highlight", {
+        FillColor = Color3.fromRGB(255, 210, 90),
+        OutlineColor = Color3.fromRGB(255, 230, 140),
+        FillTransparency = 0.45,
+        Adornee = part,
+    }, part)
+    task.delay(2, function()
+        if hl.Parent then
+            TweenService:Create(hl, TweenInfo.new(1.6), { FillTransparency = 1, OutlineTransparency = 1 }):Play()
+        end
+    end)
+    task.delay(4, function()
+        if hl.Parent then hl:Destroy() end
+    end)
+    task.delay(5, function()
+        if part.Parent then
+            part.CanCollide = false
+            local tw = TweenService:Create(part, TweenInfo.new(0.55, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+                Size = Vector3.new(0.05, 0.05, 0.05), Transparency = 0.5,
+            })
+            tw:Play()
+            tw.Completed:Connect(function()
+                if part.Parent then part:Destroy() end
+            end)
+        end
+    end)
+end
+
+local function scheduleScrapCleanup(part)
+    task.delay(10, function()
+        if part.Parent then
+            part.CanCollide = false
+            local tw = TweenService:Create(part, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+                Size = Vector3.new(0.05, 0.05, 0.05), Transparency = 1,
+            })
+            tw:Play()
+            tw.Completed:Connect(function()
+                if part.Parent then part:Destroy() end
+            end)
+        end
+    end)
+end
+
+-- ================= ФАБРИКИ =================
+local Fab = {}
+
+function Fab.brick(cf, size, colorMain)
+    size = size or Vector3.new(2.4, 1.0, 1.2)
+    colorMain = colorMain or BRICK_COLOR
+    local model = Instance.new("Model")
+    local main = create("Part", {
+        Size = size, CFrame = cf, Color = colorMain,
+        Material = Enum.Material.SmoothPlastic,
+        TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth,
+        CustomPhysicalProperties = PhysicalProperties.new(0.4, 0.45, 0.3),
+    }, model)
+    main:SetAttribute("ConstructionType", "Brick")
+    local bevel = create("Part", {
+        Size = Vector3.new(size.X - 0.3, 0.09, size.Z - 0.3),
+        CFrame = cf * CFrame.new(0, size.Y / 2 - 0.03, 0),
+        Color = lighten(colorMain, 1.18),
+        Material = Enum.Material.SmoothPlastic,
+        CanCollide = false, CanQuery = false, CanTouch = false, Massless = true,
+        TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth,
+    }, model)
+    create("WeldConstraint", { Part0 = main, Part1 = bevel }, bevel)
+    model.PrimaryPart = main
+    model:SetAttribute("ConstructionType", "Brick")
+    model.Parent = Fol.construction
+    return model
+end
+
+function Fab.board(cf, size)
+    size = size or Vector3.new(6, 0.3, 1.3)
+    local p = create("Part", {
+        Size = size, CFrame = cf, Color = Color3.fromRGB(190, 142, 88),
+        Material = Enum.Material.WoodPlanks,
+        TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth,
+        CustomPhysicalProperties = PhysicalProperties.new(0.35, 0.5, 0.4),
+    }, Fol.construction)
+    p:SetAttribute("ConstructionType", "Board")
+    return p
+end
+
+function Fab.wall(bottomCF)
+    local p = create("Part", {
+        Size = Vector3.new(10, 7, 0.6),
+        CFrame = bottomCF * CFrame.new(0, 3.5, 0),
+        Color = Color3.fromRGB(228, 227, 222),
+        Material = Enum.Material.SmoothPlastic, Anchored = true, CanCollide = true,
+        TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth,
+    }, Fol.construction)
+    p:SetAttribute("ConstructionType", "Wall")
+    return p
+end
+
+function Fab.foundation(bottomCF)
+    local p = create("Part", {
+        Size = Vector3.new(14, 0.8, 14),
+        CFrame = bottomCF * CFrame.new(0, 0.4, 0),
+        Color = Color3.fromRGB(150, 148, 142),
+        Material = Enum.Material.Concrete, Anchored = true, CanCollide = true,
+        TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth,
+    }, Fol.construction)
+    p:SetAttribute("ConstructionType", "Foundation")
+    return p
+end
+
+function Fab.ceiling(bottomCF)
+    local p = create("Part", {
+        Size = Vector3.new(12, 0.6, 12),
+        CFrame = bottomCF * CFrame.new(0, 0.3, 0),
+        Color = Color3.fromRGB(235, 234, 230),
+        Material = Enum.Material.SmoothPlastic, Anchored = true, CanCollide = true,
+        TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth,
+    }, Fol.construction)
+    p:SetAttribute("ConstructionType", "Ceiling")
+    return p
+end
+
+-- мебель: ФИЗИЧЕСКАЯ сборка (без анкера)
+function Fab.fpart(model, primary, sz, off, color, mat)
+    local p = create("Part", {
+        Size = sz, CFrame = off,
+        Color = color, Material = mat or Enum.Material.SmoothPlastic,
+        Anchored = false, CanCollide = true,
+        CustomPhysicalProperties = PhysicalProperties.new(0.5, 0.55, 0.3),
+        TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth,
+    }, model)
+    p:SetAttribute("ConstructionType", "Furniture")
+    if primary and primary ~= p then
+        create("WeldConstraint", { Part0 = primary, Part1 = p }, p)
+    end
+    return p
+end
+
+function Fab.table(bottomCF)
+    local model = Instance.new("Model")
+    local wood = Color3.fromRGB(170, 120, 70)
+    local dark = Color3.fromRGB(140, 96, 55)
+    local top = Fab.fpart(model, nil, Vector3.new(3.2, 0.3, 2.0), bottomCF * CFrame.new(0, 2.25, 0), wood, Enum.Material.WoodPlanks)
+    Fab.fpart(model, top, Vector3.new(0.3, 2.1, 0.3), bottomCF * CFrame.new(1.35, 1.05, 0.75), dark)
+    Fab.fpart(model, top, Vector3.new(0.3, 2.1, 0.3), bottomCF * CFrame.new(-1.35, 1.05, 0.75), dark)
+    Fab.fpart(model, top, Vector3.new(0.3, 2.1, 0.3), bottomCF * CFrame.new(1.35, 1.05, -0.75), dark)
+    Fab.fpart(model, top, Vector3.new(0.3, 2.1, 0.3), bottomCF * CFrame.new(-1.35, 1.05, -0.75), dark)
+    model.PrimaryPart = top
+    model.Parent = Fol.construction
+end
+
+function Fab.chair(bottomCF)
+    local model = Instance.new("Model")
+    local wood = Color3.fromRGB(160, 112, 64)
+    local seat = Fab.fpart(model, nil, Vector3.new(1.5, 0.25, 1.5), bottomCF * CFrame.new(0, 1.62, 0), wood, Enum.Material.WoodPlanks)
+    Fab.fpart(model, seat, Vector3.new(0.22, 1.5, 0.22), bottomCF * CFrame.new(0.55, 0.75, 0.55), wood)
+    Fab.fpart(model, seat, Vector3.new(0.22, 1.5, 0.22), bottomCF * CFrame.new(-0.55, 0.75, 0.55), wood)
+    Fab.fpart(model, seat, Vector3.new(0.22, 1.5, 0.22), bottomCF * CFrame.new(0.55, 0.75, -0.55), wood)
+    Fab.fpart(model, seat, Vector3.new(0.22, 1.5, 0.22), bottomCF * CFrame.new(-0.55, 0.75, -0.55), wood)
+    Fab.fpart(model, seat, Vector3.new(1.5, 1.7, 0.22), bottomCF * CFrame.new(0, 2.6, -0.64), wood, Enum.Material.WoodPlanks)
+    model.PrimaryPart = seat
+    model.Parent = Fol.construction
+end
+
+function Fab.sofa(bottomCF)
+    local model = Instance.new("Model")
+    local fab = Color3.fromRGB(95, 110, 150)
+    local fabDark = Color3.fromRGB(80, 94, 132)
+    local base = Fab.fpart(model, nil, Vector3.new(5, 1.3, 2.1), bottomCF * CFrame.new(0, 0.65, 0), fab, Enum.Material.Fabric)
+    Fab.fpart(model, base, Vector3.new(5, 1.5, 0.45), bottomCF * CFrame.new(0, 2.05, -0.82), fabDark, Enum.Material.Fabric)
+    Fab.fpart(model, base, Vector3.new(0.5, 1.1, 2.1), bottomCF * CFrame.new(2.25, 1.45, 0), fabDark, Enum.Material.Fabric)
+    Fab.fpart(model, base, Vector3.new(0.5, 1.1, 2.1), bottomCF * CFrame.new(-2.25, 1.45, 0), fabDark, Enum.Material.Fabric)
+    Fab.fpart(model, base, Vector3.new(2.05, 0.35, 1.5), bottomCF * CFrame.new(1.05, 1.47, 0.15), fab, Enum.Material.Fabric)
+    Fab.fpart(model, base, Vector3.new(2.05, 0.35, 1.5), bottomCF * CFrame.new(-1.05, 1.47, 0.15), fab, Enum.Material.Fabric)
+    model.PrimaryPart = base
+    model.Parent = Fol.construction
+end
+
+-- ================= ДВЕРЬ =================
+local Door = {}
+Door.reg = {}
+Door.W, Door.H, Door.T = 2.6, 5.6, 0.18
+
+function Door.make(bottomCF)
+    local model = Instance.new("Model")
+    local W, H, T = Door.W, Door.H, Door.T
+    local pivot = create("Part", {
+        Size = Vector3.new(0.2, 0.2, 0.2),
+        CFrame = bottomCF * CFrame.new(-W / 2, H / 2, 0),
+        Transparency = 1, Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false,
+    }, model)
+    local panel = create("Part", {
+        Size = Vector3.new(W, H, T),
+        CFrame = bottomCF * CFrame.new(0, H / 2, 0),
+        Color = Color3.fromRGB(140, 92, 52), Material = Enum.Material.WoodPlanks,
+        Anchored = false, CanCollide = true, CanQuery = true, Massless = true,
+        TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth,
+    }, model)
+    panel:SetAttribute("ConstructionType", "Door")
+    create("WeldConstraint", { Part0 = pivot, Part1 = panel }, pivot)
+    local function framePiece(sz, off)
+        return create("Part", {
+            Size = sz, CFrame = bottomCF * off,
+            Color = Color3.fromRGB(110, 74, 44), Material = Enum.Material.SmoothPlastic,
+            Anchored = true, CanCollide = true,
+            TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth,
+        }, model)
+    end
+    framePiece(Vector3.new(0.35, H + 0.35, 0.7), CFrame.new(-(W / 2 + 0.22), (H + 0.35) / 2, 0))
+    framePiece(Vector3.new(0.35, H + 0.35, 0.7), CFrame.new(W / 2 + 0.22, (H + 0.35) / 2, 0))
+    framePiece(Vector3.new(W + 1.1, 0.35, 0.7), CFrame.new(0, H + 0.17, 0))
+    model.PrimaryPart = pivot
+    model:SetAttribute("ConstructionType", "Door")
+    model.Parent = Fol.construction
+    Door.reg[model] = { pivot = pivot, panel = panel, closedCF = pivot.CFrame, open = false, busy = false, broken = false }
+    return model
+end
+
+function Door.toggle(model)
+    local d = Door.reg[model]
+    if not d or d.busy or d.broken then return end
+    if not d.pivot or not d.pivot.Parent then return end
+    d.busy = true
+    d.open = not d.open
+    local target = d.closedCF * CFrame.Angles(0, d.open and math.rad(105) or 0, 0)
+    local tw = TweenService:Create(d.pivot, TweenInfo.new(0.7, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), { CFrame = target })
+    tw:Play()
+    playSound("rbxasset://sounds/button.wav", d.panel, 0.6)
+    tw.Completed:Connect(function()
+        d.busy = false
+    end)
+end
+
+-- ================= ОКНА =================
+local Win = {}
+Win.reg = {}
+
+function Win.glass(model, cf, size)
+    local g = create("Part", {
+        Size = size, CFrame = cf,
+        Color = Color3.fromRGB(200, 225, 235), Material = Enum.Material.Glass,
+        Transparency = 0.5, Anchored = true, CanCollide = true,
+        TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth,
+    }, model)
+    g:SetAttribute("ConstructionType", "Window")
+    g:SetAttribute("Glass", true)
+    return g
+end
+
+function Win.make(bottomCF, big)
+    local model = Instance.new("Model")
+    local W = big and 6 or 3
+    local H = big and 4 or 2.6
+    local T = big and 0.35 or 0.3
+    local ft = 0.18
+    local wood = Color3.fromRGB(120, 90, 60)
+    local cfCenter = bottomCF * CFrame.new(0, H / 2, 0)
+    local glass = Win.glass(model, cfCenter, Vector3.new(W - ft * 2, H - ft * 2, T * 0.4))
+    local function barPart(sz, off)
+        return create("Part", {
+            Size = sz, CFrame = cfCenter * off,
+            Color = wood, Material = Enum.Material.SmoothPlastic,
+            Anchored = true, CanCollide = true,
+            TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth,
+        }, model)
+    end
+    local bottom = barPart(Vector3.new(W, ft, T), CFrame.new(0, -(H / 2 - ft / 2), 0))
+    barPart(Vector3.new(W, ft, T), CFrame.new(0, H / 2 - ft / 2, 0))
+    barPart(Vector3.new(ft, H - ft * 2, T), CFrame.new(-(W / 2 - ft / 2), 0, 0))
+    barPart(Vector3.new(ft, H - ft * 2, T), CFrame.new(W / 2 - ft / 2, 0, 0))
+    model.PrimaryPart = glass
+    model:SetAttribute("ConstructionType", "Window")
+    model.Parent = Fol.construction
+    Win.reg[model] = { glass = glass, glassCF = glass.CFrame, glassSize = glass.Size, broken = false, soundPart = bottom }
+    return model
+end
+
+function Win.shatter(model)
+    local w = Win.reg[model]
+    if not w or w.broken then return end
+    w.broken = true
+    if w.glass and w.glass.Parent then
+        w.glass:Destroy()
+    end
+    w.glass = nil
+    local gs = w.glassSize
+    for _ = 1, 8 do
+        local s = 0.3 + math.random() * 0.35
+        local shard = create("Part", {
+            Size = Vector3.new(s, 0.03, s * (0.5 + math.random())),
+            CFrame = w.glassCF
+                * CFrame.new((math.random() - 0.5) * gs.X, (math.random() - 0.5) * gs.Y, (math.random() - 0.5) * 0.2)
+                * CFrame.Angles(math.random() * 3, math.random() * 3, math.random() * 3),
+            Color = Color3.fromRGB(200, 225, 235), Material = Enum.Material.Glass,
+            Transparency = 0.25,
+            CustomPhysicalProperties = PhysicalProperties.new(0.2, 0.3, 0.1),
+        }, Fol.construction)
+        shard:SetAttribute("ConstructionType", "Scrap")
+        shard.AssemblyLinearVelocity = Vector3.new((math.random() - 0.5) * 5, 1 + math.random() * 2, (math.random() - 0.5) * 5)
+        startScrapLifecycle(shard)
+    end
+    playSound("rbxasset://sounds/flashbulb.wav", w.soundPart, 0.9, 1.2)
+end
+
+function Win.repair(model)
+    local w = Win.reg[model]
+    if not w or not w.broken then return end
+    w.broken = false
+    w.glass = Win.glass(model, w.glassCF, w.glassSize)
+    playSound("rbxasset://sounds/electronicpingshort.wav", w.soundPart, 0.6)
+end
+
+-- ================= РЕЗАК =================
+local Cut = {}
+
+function Cut.split(part, offsetLocalX)
+    local cf = part.CFrame
+    local size = part.Size
+    local w = size.X
+    local leftW = math.clamp(offsetLocalX + w / 2, 0.12, w - 0.12)
+    local rightW = w - leftW
+    local function makePiece(width, centerLocal)
+        local p = create("Part", {
+            Size = Vector3.new(width, size.Y, size.Z),
+            CFrame = cf * CFrame.new(centerLocal, 0, 0),
+            Color = part.Color, Material = part.Material,
+            TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth,
+        }, Fol.construction)
+        p:SetAttribute("ConstructionType", part:GetAttribute("ConstructionType"))
+        return p
+    end
+    return makePiece(leftW, -w / 2 + leftW / 2), makePiece(rightW, w / 2 - rightW / 2)
+end
+
+function Cut.enter(model)
+    if not model or not model.PrimaryPart then return end
+    local main = model.PrimaryPart
+    State.IsCutting = true
+    State.Cut = { model = model, main = main, t = 0, offset = 0, band = nil }
+    main.Anchored = true
+    for _, p in ipairs(model:GetDescendants()) do
+        if p:IsA("BasePart") then
+            p.Transparency = 0.55
+        end
+    end
+    State.Cut.band = create("Part", {
+        Name = "CutBand",
+        Size = Vector3.new(0.07, main.Size.Y + 0.12, main.Size.Z + 0.12),
+        Color = Color3.fromRGB(255, 80, 55),
+        Material = Enum.Material.Neon,
+        Transparency = 0.15,
+        Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false,
+    }, Fol.fx)
+    hideHighlight()
+    focusCamera(main.Position, 7, 1.6)
+    showHint("РЕЗАК: ЛКМ — РЕЗ ПО ПОЛОСЕ | ESC — ОТМЕНА")
+end
+
+function Cut.exit()
+    if not State.IsCutting then return end
+    State.IsCutting = false
+    local cut = State.Cut
+    State.Cut = nil
+    if cut then
+        if cut.band and cut.band.Parent then cut.band:Destroy() end
+        if cut.model and cut.model.Parent then
+            for _, p in ipairs(cut.model:GetDescendants()) do
+                if p:IsA("BasePart") then p.Transparency = 0 end
+            end
+            if cut.model.PrimaryPart then
+                cut.model.PrimaryPart.Anchored = false
+            end
+        end
+    end
+    restoreCamera()
+    hideHint()
+end
+
+function Cut.perform()
+    local cut = State.Cut
+    if not cut or not cut.main or not cut.main.Parent then
+        Cut.exit()
+        return
+    end
+    local main = cut.main
+    local leftP, rightP = Cut.split(main, cut.offset or 0)
+    local keptP, scrapP, sign
+    if leftP.Size.X >= rightP.Size.X then
+        keptP, scrapP, sign = leftP, rightP, 1
+    else
+        keptP, scrapP, sign = rightP, leftP, -1
+    end
+    local axis = main.CFrame.RightVector
+    Fab.brick(keptP.CFrame, keptP.Size, keptP.Color)
+    keptP:Destroy()
+    cut.model:Destroy()
+    if cut.band and cut.band.Parent then cut.band:Destroy() end
+    State.Cut = nil
+    State.IsCutting = false
+    restoreCamera()
+    hideHint()
+    scrapP:SetAttribute("ConstructionType", "Scrap")
+    scrapP.AssemblyLinearVelocity = axis * 2.4 * sign + Vector3.new(0, 2.5, 0)
+    playSound("rbxasset://sounds/snap.mp3", scrapP, 0.7)
+    startScrapLifecycle(scrapP)
+end
+
+-- ================= БОЛГАРКА =================
+local Grind = {}
+
+function Grind.enter(board, hitPos, hitNormal)
+    if not board or not board.Parent then return end
+    State.GrinderActive = true
+    local model = Instance.new("Model")
+    create("Part", {
+        Size = Vector3.new(0.5, 0.5, 1.15), CFrame = CFrame.new(0, 0.55, 0.25),
+        Color = Color3.fromRGB(70, 72, 78), Material = Enum.Material.Metal,
+        CanCollide = false, CanQuery = false, CanTouch = false, Anchored = true,
+        TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth,
+    }, model)
+    create("Part", {
+        Shape = Enum.PartType.Cylinder, Size = Vector3.new(0.95, 0.55, 0.55),
+        CFrame = CFrame.new(0, 0.55, 0.25),
+        Color = Color3.fromRGB(95, 97, 105), Material = Enum.Material.Metal,
+        CanCollide = false, CanQuery = false, CanTouch = false, Anchored = true,
+    }, model)
+    local disc = create("Part", {
+        Shape = Enum.PartType.Cylinder, Size = Vector3.new(0.08, 0.85, 0.85),
+        CFrame = CFrame.new(0, 0.14, -0.32) * CFrame.Angles(0, 0, math.rad(90)),
+        Color = Color3.fromRGB(205, 207, 215), Material = Enum.Material.Metal,
+        CanCollide = false, CanQuery = false, CanTouch = false, Anchored = true,
+    }, model)
+    create("Part", {
+        Size = Vector3.new(0.34, 0.5, 0.42), CFrame = CFrame.new(0, 0.95, 0.55),
+        Color = Color3.fromRGB(48, 48, 52), Material = Enum.Material.SmoothPlastic,
+        CanCollide = false, CanQuery = false, CanTouch = false, Anchored = true,
+    }, model)
+    local sparks = create("ParticleEmitter", {
+        Texture = "rbxasset://textures/particles/sparkles_main.dds",
+        Color = ColorSequence.new(Color3.fromRGB(255, 176, 64)),
+        LightEmission = 1, LightInfluence = 0,
+        Speed = NumberRange.new(5, 9),
+        SpreadAngle = Vector2.new(45, 45),
+        Lifetime = NumberRange.new(0.12, 0.3),
+        Rate = 70,
+        Size = NumberSequence.new(0.35),
+        Enabled = false,
+    }, disc)
+    model.PrimaryPart = disc
+    model.Parent = Fol.tool
+    local dir = hitPos - camera.CFrame.Position
+    local yaw0 = math.atan2(dir.Z, dir.X)
+    State.Grind = {
+        board = board, model = model, sparks = sparks,
+        yaw = yaw0, yawTarget = yaw0,
+        lastPoint = hitPos, normal = hitNormal,
+        progress = 0, needed = 320,
+        cutOffset = nil, cutLine = nil, lastMouseY = nil,
+    }
+    board.Anchored = true
+    hideHighlight()
+    focusCamera(hitPos, 8, 2)
+    showProgress()
+    showHint("БОЛГАРКА: ЗАЖМИ И ТЯНИ ВНИЗ | ESC — ВЫХОД")
+end
+
+function Grind.exit()
+    if not State.GrinderActive then return end
+    State.GrinderActive = false
+    State.Grinding = false
+    local g = State.Grind
+    State.Grind = nil
+    if g then
+        if g.model and g.model.Parent then g.model:Destroy() end
+        if g.cutLine and g.cutLine.Parent then g.cutLine:Destroy() end
+        if g.board and g.board.Parent then g.board.Anchored = false end
+    end
+    restoreCamera()
+    hideHint()
+    hideProgress()
+end
+
+function Grind.complete()
+    local g = State.Grind
+    if not g then return end
+    local board = g.board
+    if board and board.Parent and g.cutOffset then
+        local leftP, rightP = Cut.split(board, g.cutOffset)
+        local keptP, scrapP, sign
+        if leftP.Size.X >= rightP.Size.X then
+            keptP, scrapP, sign = leftP, rightP, 1
+        else
+            keptP, scrapP, sign = rightP, leftP, -1
+        end
+        local axis = board.CFrame.RightVector
+        board:Destroy()
+        scrapP:SetAttribute("ConstructionType", "Scrap")
+        scrapP.AssemblyLinearVelocity = axis * 1.8 * sign + Vector3.new(0, 1.8, 0)
+        startScrapLifecycle(scrapP)
+    end
+    Grind.exit()
+end
+
+-- ================= ЦЕМЕНТ / КЛЕЙ =================
+local Adh = {}
+Adh.cfg = {
+    Cement = {
+        folder = Fol.cement, type = "Cement",
+        color = Color3.fromRGB(163, 160, 150), material = Enum.Material.Concrete,
+        width = 1.0, visH = 0.15, ratio = 0.45, overlap = 0.7, minSeg = 0.5,
+    },
+    Glue = {
+        folder = Fol.glue, type = "Glue",
+        color = Color3.fromRGB(222, 186, 90), material = Enum.Material.SmoothPlastic,
+        width = 0.5, visH = 0.07, ratio = 0.5, overlap = 0.35, minSeg = 0.4,
+    },
+}
+Adh.preview = nil
+
+function Adh.center(pos, normal, visH, ratio)
+    local fullH = visH / ratio
+    return pos - normal * (fullH / 2 - visH)
+end
+
+function Adh.tint(color)
+    local f = 0.96 + math.random() * 0.07
+    return Color3.new(
+        math.min(color.R * f, 1),
+        math.min(color.G * f, 1),
+        math.min(color.B * f, 1)
+    )
+end
+
+function Adh.placePiece(cfg, centerPos, tangent, normal, sx, sz, visH, surface)
+    local fullH = visH / cfg.ratio
+    local blob = create("Part", {
+        Size = Vector3.new(sx, fullH, sz),
+        CFrame = CFrame.lookAt(centerPos, centerPos + tangent, normal),
+        Color = Adh.tint(cfg.color),
+        Material = cfg.material,
+        Anchored = true, CanCollide = false, CanQuery = true, CanTouch = false,
+        TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth,
+    }, cfg.folder)
+    makeSphereMesh(blob)
+    blob:SetAttribute("ConstructionType", cfg.type)
+    blob:SetAttribute("VisH", visH)
+    blob:SetAttribute("Ratio", cfg.ratio)
+    if surface and surface:IsA("BasePart") and not surface.Anchored then
+        blob.Anchored = false
+        blob.Massless = true
+        create("WeldConstraint", { Part0 = blob, Part1 = surface }, blob)
+    end
+    return blob
+end
+
+function Adh.depositStart(cfg, pos, normal, surface)
+    local d = cfg.width + 0.05
+    Adh.placePiece(cfg, Adh.center(pos, normal, cfg.visH, cfg.ratio), surfaceTangent(normal), normal, d, d, cfg.visH, surface)
+end
+
+function Adh.depositSegment(cfg, fromPos, toPos, normal, surface)
+    local dir = toPos - fromPos
+    local flat = dir - normal * dir:Dot(normal)
+    local len = flat.Magnitude
+    if len < cfg.minSeg then return false end
+    flat = flat / len
+    local mid = (fromPos + toPos) / 2
+    local center = Adh.center(mid, normal, cfg.visH, cfg.ratio)
+    Adh.placePiece(cfg, center, flat, normal, cfg.width + math.random() * 0.08, len + cfg.overlap, cfg.visH, surface)
+    return true
+end
+
+function Adh.deform(blob, factor, pushDir, pushDist)
+    local visH = blob:GetAttribute("VisH")
+    local ratio = blob:GetAttribute("Ratio") or 0.45
+    if not visH or not blob.Parent then return end
+    local cf = blob.CFrame
+    local n = cf.UpVector
+    local sink = blob.Size.Y / 2 - visH
+    local surfPos = blob.Position + n * sink
+    local newVis = math.max(visH * factor, 0.02)
+    local newFull = newVis / ratio
+    local newSurf = surfPos
+    if pushDir and pushDist then
+        newSurf = surfPos + pushDir * pushDist
+    end
+    local newCenter = newSurf - n * (newFull / 2 - newVis)
+    local size = blob.Size
+    TweenService:Create(blob, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        Size = Vector3.new(size.X * 1.25, newFull, size.Z * 1.08),
+        CFrame = CFrame.new(newCenter) * cf.Rotation,
+    }):Play()
+    blob:SetAttribute("VisH", newVis)
+end
+
+function Adh.activate(kind)
+    State.LastCementPos = nil
+    State.LastCementNrm = nil
+    if Adh.preview then Adh.preview:Destroy() end
+    local cfg = Adh.cfg[kind]
+    Adh.preview = create("Part", {
+        Size = Vector3.new(cfg.width, cfg.visH / cfg.ratio, 0.5),
+        Color = cfg.color, Material = cfg.material,
+        Transparency = 1, Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false,
+    }, Fol.fx)
+    makeSphereMesh(Adh.preview)
+end
+
+function Adh.deactivate()
+    State.Cementing = false
+    State.LastCementPos = nil
+    State.LastCementNrm = nil
+    if Adh.preview then
+        Adh.preview:Destroy()
+        Adh.preview = nil
+    end
+end
+
+-- ================= ЗАКРЕПЛЕНИЕ НА ЦЕМЕНТЕ/КЛЕЮ =================
+local Mount = {}
+
+function Mount.anchorWeld(part, bottomCF, sx, sz, ownerModel)
+    local rp = RaycastParams.new()
+    rp.FilterType = Enum.RaycastFilterType.Exclude
+    local exList = baseExcludeList()
+    if ownerModel then table.insert(exList, ownerModel) else table.insert(exList, part) end
+    local char = player.Character
+    if char then table.insert(exList, char) end
+    rp.FilterDescendantsInstances = exList
+    local downDir = -bottomCF.UpVector * 2.6
+    local probes = {
+        Vector3.new(0, 0, 0),
+        Vector3.new(sx * 0.3, 0, sz * 0.3),
+        Vector3.new(-sx * 0.3, 0, sz * 0.3),
+        Vector3.new(sx * 0.3, 0, -sz * 0.3),
+        Vector3.new(-sx * 0.3, 0, -sz * 0.3),
+    }
+    for _, off in ipairs(probes) do
+        local origin = bottomCF * off
+        local hit = workspace:Raycast(origin, downDir, rp)
+        if hit and hit.Instance and hit.Instance:IsA("BasePart") then
+            create("WeldConstraint", { Part0 = part, Part1 = hit.Instance }, part)
+            return true
+        end
+    end
+    return false
+end
+
+function Mount.weldNeighbors(part, cf, sx, sy, sz, ownerModel, blobsAll)
+    local opN = OverlapParams.new()
+    opN.FilterType = Enum.RaycastFilterType.Include
+    opN.FilterDescendantsInstances = { Fol.construction }
+    opN.MaxParts = 40
+    local nearParts = workspace:GetPartBoundsInBox(cf, Vector3.new(sx + 0.45, sy + 0.45, sz + 0.45), opN)
+    local count = 0
+    for _, np in ipairs(nearParts) do
+        if np ~= part and np:IsA("BasePart") and np.Parent and count < 6 then
+            local nm = np:FindFirstAncestorOfClass("Model")
+            if not (ownerModel and nm == ownerModel) then
+                local t = np:GetAttribute("ConstructionType")
+                if t == "Brick" or t == "Board" or t == "Wall" or t == "Foundation" or t == "Ceiling" then
+                    local ncf = np.CFrame
+                    local hs = np.Size / 2 + Vector3.new(0.55, 0.55, 0.55)
+                    for _, blob in ipairs(blobsAll) do
+                        if blob.Parent then
+                            local rel = ncf:PointToObjectSpace(blob.Position)
+                            if math.abs(rel.X) <= hs.X and math.abs(rel.Y) <= hs.Y and math.abs(rel.Z) <= hs.Z then
+                                create("WeldConstraint", { Part0 = part, Part1 = np }, part)
+                                count += 1
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return count
+end
+
+function Mount.deformBlobs(blobsAll, bottomCF, sx, sy, sz)
+    local innerW, innerZ = sx / 2 - 0.08, sz / 2 - 0.08
+    local touched = 0
+    for _, blob in ipairs(blobsAll) do
+        if blob.Parent and not blob:GetAttribute("Hidden") then
+            local rel = bottomCF:PointToObjectSpace(blob.Position)
+            local bsz = blob.Size
+            if math.abs(rel.Y) <= sy / 2 + 0.5 then
+                local centerInside = (math.abs(rel.X) <= innerW and math.abs(rel.Z) <= innerZ)
+                local fitsFully = (math.abs(rel.X) + bsz.X / 2 <= innerW + 0.15)
+                    and (math.abs(rel.Z) + bsz.Z / 2 <= innerZ + 0.15)
+                local hDir = Vector3.new(rel.X, 0, rel.Z)
+                local pushDir
+                if hDir.Magnitude > 0.05 then
+                    pushDir = bottomCF:VectorToWorldSpace(hDir.Unit)
+                else
+                    pushDir = surfaceTangent(bottomCF.UpVector)
+                end
+                if centerInside and fitsFully then
+                    touched += 1
+                    blob:SetAttribute("Hidden", true)
+                    blob.CanQuery = false
+                    Adh.deform(blob, 0.15, nil, 0)
+                    TweenService:Create(blob, TweenInfo.new(0.18), { Transparency = 1 }):Play()
+                elseif centerInside then
+                    touched += 1
+                    Adh.deform(blob, 0.3, pushDir, 0.22)
+                elseif math.abs(rel.X) <= innerW + 0.6 and math.abs(rel.Z) <= innerZ + 0.6 then
+                    touched += 1
+                    Adh.deform(blob, 0.45, pushDir, 0.32)
+                end
+            end
+        end
+    end
+    return touched
+end
+
+function Mount.try(part)
+    if not part or not part.Parent then return end
+    if part:GetAttribute("Mounted") then return end
+    if State.Drag and State.Drag.part == part then return end
+    if part.Anchored and not part:GetAttribute("Frozen") then return end
+    local ctype = part:GetAttribute("ConstructionType")
+    if ctype ~= "Brick" and ctype ~= "Board" then return end
+
+    local cf = part.CFrame
+    local sx, sy, sz = part.Size.X, part.Size.Y, part.Size.Z
+    local bottomCF = cf * CFrame.new(0, -sy / 2, 0)
+    local ownerModel = part:FindFirstAncestorOfClass("Model")
+
+    local opAll = OverlapParams.new()
+    opAll.FilterType = Enum.RaycastFilterType.Include
+    opAll.FilterDescendantsInstances = { Fol.cement, Fol.glue }
+    opAll.MaxParts = 100
+    local blobsAll = workspace:GetPartBoundsInBox(cf, Vector3.new(sx + 0.6, sy + 0.6, sz + 0.6), opAll)
+    if #blobsAll == 0 then return end
+
+    local welded = Mount.anchorWeld(part, bottomCF, sx, sz, ownerModel)
+    local nbCount = Mount.weldNeighbors(part, cf, sx, sy, sz, ownerModel, blobsAll)
+    welded = welded or (nbCount > 0)
+    if not welded then return end
+
+    part:SetAttribute("Mounted", true)
+    part.AssemblyAngularVelocity = Vector3.zero
+    part.AssemblyLinearVelocity = Vector3.zero
+
+    local touched = Mount.deformBlobs(blobsAll, bottomCF, sx, sy, sz)
+    if touched > 0 then
+        playSound("rbxasset://sounds/snap.mp3", part, 0.3)
+    end
+end
+
+-- ================= C4 / ВЗРЫВ / РАЗРУШЕНИЕ =================
+local Boom = {}
+Boom.reg = {}
+
+function Boom.makeC4(pos, normal, surfacePart)
+    local model = Instance.new("Model")
+    local center = pos + normal * 0.1
+    local cf = CFrame.lookAt(center, center + surfaceTangent(normal), normal)
+    local body = create("Part", {
+        Size = Vector3.new(0.55, 0.18, 0.4),
+        CFrame = cf,
+        Color = Color3.fromRGB(62, 72, 52), Material = Enum.Material.SmoothPlastic,
+        CanCollide = false, CanQuery = true, CanTouch = false,
+        TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth,
+    }, model)
+    body:SetAttribute("ConstructionType", "C4")
+    local light = create("Part", {
+        Shape = Enum.PartType.Ball, Size = Vector3.new(0.12, 0.12, 0.12),
+        CFrame = cf * CFrame.new(0, 0.14, -0.1),
+        Color = Color3.fromRGB(255, 60, 50), Material = Enum.Material.Neon,
+        CanCollide = false, CanQuery = false, CanTouch = false, Massless = true,
+    }, model)
+    create("WeldConstraint", { Part0 = body, Part1 = light }, light)
+    if surfacePart and surfacePart:IsA("BasePart") and not surfacePart.Anchored then
+        body.Anchored = false
+        body.Massless = true
+        create("WeldConstraint", { Part0 = body, Part1 = surfacePart }, body)
+    else
+        body.Anchored = true
+    end
+    model.PrimaryPart = body
+    model.Parent = Fol.construction
+    Boom.reg[model] = body
+    task.spawn(function()
+        while model.Parent do
+            light.Color = Color3.fromRGB(255, 60, 50)
+            task.wait(0.3)
+            if not model.Parent then break end
+            light.Color = Color3.fromRGB(120, 20, 15)
+            task.wait(0.3)
+        end
+    end)
+    return model
+end
+
+function Boom.scrapPieces(part, n, impulse)
+    local cf, size = part.CFrame, part.Size
+    local axes = { { "X", size.X }, { "Y", size.Y }, { "Z", size.Z } }
+    table.sort(axes, function(a, b) return a[2] > b[2] end)
+    local axisName, w = axes[1][1], axes[1][2]
+    if w < 0.4 then return end
+    local prev = -w / 2
+    for i = 1, n do
+        local a = prev
+        local b = (i < n) and (-w / 2 + (w / n) * i + (math.random() - 0.5) * w * 0.12) or (w / 2)
+        if b - a < 0.12 then b = a + 0.12 end
+        local width = b - a
+        local center = (a + b) / 2
+        local off, newSize
+        if axisName == "X" then
+            off = Vector3.new(center, 0, 0)
+            newSize = Vector3.new(width, size.Y, size.Z)
+        elseif axisName == "Y" then
+            off = Vector3.new(0, center, 0)
+            newSize = Vector3.new(size.X, width, size.Z)
+        else
+            off = Vector3.new(0, 0, center)
+            newSize = Vector3.new(size.X, size.Y, width)
+        end
+        local p = create("Part", {
+            Size = newSize,
+            CFrame = cf * CFrame.new(off),
+            Color = part.Color, Material = part.Material,
+            TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth,
+        }, Fol.construction)
+        p:SetAttribute("ConstructionType", "Scrap")
+        if impulse then
+            p.AssemblyLinearVelocity = impulse
+                + Vector3.new((math.random() - 0.5) * 6, 2 + math.random() * 3, (math.random() - 0.5) * 6)
+        end
+        if State.CleanupEnabled then
+            scheduleScrapCleanup(p)
+        end
+        prev = b
+    end
+end
+
+function Boom.smash(part, impulse)
+    if not part or not part.Parent then return end
+    local t = part:GetAttribute("ConstructionType")
+    if not t then
+        -- карта/земля взрывом не разрушается
+        return
+    end
+    if t == "C4" then
+        local mdl = part:FindFirstAncestorOfClass("Model")
+        if mdl then Boom.detonate(mdl) end
+        return
+    end
+    if t == "Window" then
+        local mdl = part:FindFirstAncestorOfClass("Model")
+        if mdl then Win.shatter(mdl) end
+        return
+    end
+    if t == "Nail" then
+        part:Destroy()
+        return
+    end
+    if t == "Furniture" then
+        local mdl = part:FindFirstAncestorOfClass("Model")
+        spawnDust(part.Position, part.Color)
+        if mdl and mdl.Parent then mdl:Destroy() end
+        playSound("rbxasset://sounds/collide.wav", workspace, 0.6, 1.1)
+        return
+    end
+    local size = part.Size
+    local longest = math.max(size.X, size.Y, size.Z)
+    if t == "Brick" then
+        local mdl = part:FindFirstAncestorOfClass("Model")
+        if longest > 0.5 then
+            Boom.scrapPieces(part, 3, impulse)
+        end
+        if mdl and mdl.Parent then mdl:Destroy() end
+        playSound("rbxasset://sounds/collide.wav", workspace, 0.6, 1.2)
+        return
+    end
+    if t == "Door" then
+        local mdl = part:FindFirstAncestorOfClass("Model")
+        if mdl and Door.reg[mdl] then
+            Door.reg[mdl].broken = true
+        end
+        if longest > 0.5 then
+            Boom.scrapPieces(part, 3, impulse)
+        end
+        if part.Parent then part:Destroy() end
+        playSound("rbxasset://sounds/collide.wav", workspace, 0.6, 1.1)
+        return
+    end
+    if longest <= 0.5 then
+        part.CanCollide = false
+        local tw = TweenService:Create(part, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+            Size = Vector3.new(0.05, 0.05, 0.05), Transparency = 1,
+        })
+        tw:Play()
+        tw.Completed:Connect(function()
+            if part.Parent then part:Destroy() end
+        end)
+        return
+    end
+    Boom.scrapPieces(part, math.random(2, 3), impulse)
+    if part.Parent then part:Destroy() end
+    playSound("rbxasset://sounds/collide.wav", workspace, 0.6, 1.1)
+end
+
+function Boom.explode(pos, radius, power)
+    local op = OverlapParams.new()
+    op.FilterType = Enum.RaycastFilterType.Exclude
+    op.FilterDescendantsInstances = { Fol.fx, Fol.paint, Fol.wallpaper, Fol.carpet, Fol.tool }
+    op.MaxParts = 120
+    local parts = workspace:GetPartBoundsInBox(CFrame.new(pos), Vector3.new(radius * 2, radius * 2, radius * 2), op)
+    local seen = {}
+    for _, p in ipairs(parts) do
+        if not seen[p] and p.Parent then
+            seen[p] = true
+            local d = (p.Position - pos).Magnitude
+            if d < radius then
+                if p.Parent == Fol.cement or p.Parent == Fol.glue then
+                    p:Destroy()
+                else
+                    local dir = (p.Position - pos) + Vector3.new(0, radius * 0.35, 0)
+                    if dir.Magnitude < 0.1 then dir = Vector3.new(0, 1, 0) end
+                    dir = dir.Unit
+                    local falloff = 1 - d / radius
+                    Boom.smash(p, dir * power * falloff + Vector3.new(0, 8 * falloff, 0))
+                end
+            end
+        end
+    end
+    local flash = create("Part", {
+        Shape = Enum.PartType.Ball, Size = Vector3.new(2, 2, 2),
+        CFrame = CFrame.new(pos),
+        Color = Color3.fromRGB(255, 200, 90), Material = Enum.Material.Neon,
+        Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false,
+        Transparency = 0.1,
+    }, Fol.fx)
+    TweenService:Create(flash, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        Size = Vector3.new(radius * 1.6, radius * 1.6, radius * 1.6),
+        Transparency = 1,
+    }):Play()
+    Debris:AddItem(flash, 0.35)
+    spawnDust(pos, Color3.fromRGB(160, 155, 145))
+    playSound("rbxasset://sounds/collide.wav", workspace, 1, 0.55)
+    playSound("rbxasset://sounds/flashbulb.wav", workspace, 0.8, 0.5)
+end
+
+function Boom.detonate(model)
+    local body = Boom.reg[model]
+    Boom.reg[model] = nil
+    if not body or not body.Parent then return end
+    local pos = body.Position
+    model:Destroy()
+    Boom.explode(pos, 9, 46)
+end
+
+-- ================= МОЛОТОК =================
+local Hmr = {}
+
+function Hmr.make()
+    local model = Instance.new("Model")
+    create("Part", {
+        Shape = Enum.PartType.Cylinder,
+        Size = Vector3.new(0.9, 0.16, 0.16),
+        CFrame = CFrame.new(0, -0.45, 0) * CFrame.Angles(0, 0, math.rad(90)),
+        Color = Color3.fromRGB(150, 106, 62), Material = Enum.Material.Wood,
+        CanCollide = false, CanQuery = false, CanTouch = false, Anchored = true,
+        TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth,
+    }, model)
+    local head = create("Part", {
+        Size = Vector3.new(0.26, 0.3, 0.55),
+        CFrame = CFrame.new(0, -0.9, 0),
+        Color = Color3.fromRGB(120, 122, 128), Material = Enum.Material.Metal,
+        CanCollide = false, CanQuery = false, CanTouch = false, Anchored = true,
+        TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth,
+    }, model)
+    model.PrimaryPart = head
+    model.Parent = Fol.tool
+    return model
+end
+
+function Hmr.nail(part, hitPos, normal)
+    if not part or not part.Parent then return end
+    if not part:GetAttribute("Nailed") then
+        local rp = RaycastParams.new()
+        rp.FilterType = Enum.RaycastFilterType.Exclude
+        local ex = baseExcludeList()
+        local mdl = part:FindFirstAncestorOfClass("Model")
+        if mdl then table.insert(ex, mdl) else table.insert(ex, part) end
+        local char = player.Character
+        if char then table.insert(ex, char) end
+        rp.FilterDescendantsInstances = ex
+        local under = workspace:Raycast(hitPos + normal * 0.1, -normal * 3, rp)
+        if under and under.Instance and under.Instance:IsA("BasePart") and under.Instance ~= part then
+            create("WeldConstraint", { Part0 = part, Part1 = under.Instance }, part)
+            part:SetAttribute("Nailed", true)
+            part:SetAttribute("Mounted", true)
+        end
+    end
+    local baseCF = CFrame.lookAt(hitPos, hitPos + normal, surfaceTangent(normal)) * CFrame.Angles(0, math.rad(90), 0)
+    local nail = create("Part", {
+        Shape = Enum.PartType.Cylinder,
+        Size = Vector3.new(0.5, 0.07, 0.07),
+        CFrame = baseCF * CFrame.new(-0.13, 0, 0),
+        Color = Color3.fromRGB(190, 192, 198), Material = Enum.Material.Metal,
+        CanCollide = false, CanQuery = false, CanTouch = false, Massless = true,
+    }, Fol.construction)
+    nail:SetAttribute("ConstructionType", "Nail")
+    local nailHead = create("Part", {
+        Shape = Enum.PartType.Cylinder,
+        Size = Vector3.new(0.03, 0.16, 0.16),
+        CFrame = baseCF * CFrame.new(0.14, 0, 0),
+        Color = Color3.fromRGB(190, 192, 198), Material = Enum.Material.Metal,
+        CanCollide = false, CanQuery = false, CanTouch = false, Massless = true,
+    }, Fol.construction)
+    nailHead:SetAttribute("ConstructionType", "Nail")
+    create("WeldConstraint", { Part0 = part, Part1 = nail }, nail)
+    create("WeldConstraint", { Part0 = part, Part1 = nailHead }, nailHead)
+    playSound("rbxasset://sounds/snap.mp3", part, 0.7)
+end
+
+function Hmr.runSwing(model, swing, duration, lift, maxAngle, dt, applyFn)
+    local pos, nrm = swing.pos, swing.normal
+    local P = pos + nrm * lift
+    local camLook = camera.CFrame.LookVector
+    local tangent = camLook - nrm * camLook:Dot(nrm)
+    if tangent.Magnitude < 0.05 then
+        tangent = surfaceTangent(nrm)
+    else
+        tangent = tangent.Unit
+    end
+    local F = CFrame.lookAt(P, P + tangent, nrm)
+    local theta = maxAngle
+    swing.t += dt / duration
+    if not swing.applied and swing.t >= 0.5 then
+        swing.applied = true
+        applyFn()
+    end
+    if swing.t >= 1 then
+        model:PivotTo(F * CFrame.Angles(maxAngle * 0.35, 0, 0))
+        return true
+    elseif swing.t < 0.5 then
+        local k = 1 - swing.t / 0.5
+        theta = maxAngle * k * k
+    else
+        local k = (swing.t - 0.5) / 0.5
+        local e = 1 - (1 - k) * (1 - k)
+        theta = maxAngle * e
+    end
+    model:PivotTo(F * CFrame.Angles(theta, 0, 0))
+    return false
+end
+
+function Hmr.activate()
+    State.Hammer = { model = Hmr.make() }
+end
+
+function Hmr.exit()
+    State.HammerSwing = nil
+    if State.Hammer and State.Hammer.model and State.Hammer.model.Parent then
+        State.Hammer.model:Destroy()
+    end
+    State.Hammer = nil
+end
+
+-- ================= КУВАЛДА (удаляет только постройки + пыль) =================
+local Sld = {}
+
+function Sld.make()
+    local model = Instance.new("Model")
+    create("Part", {
+        Shape = Enum.PartType.Cylinder,
+        Size = Vector3.new(1.5, 0.2, 0.2),
+        CFrame = CFrame.new(0, -0.75, 0) * CFrame.Angles(0, 0, math.rad(90)),
+        Color = Color3.fromRGB(140, 98, 58), Material = Enum.Material.Wood,
+        CanCollide = false, CanQuery = false, CanTouch = false, Anchored = true,
+        TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth,
+    }, model)
+    local head = create("Part", {
+        Size = Vector3.new(0.5, 0.42, 1.0),
+        CFrame = CFrame.new(0, -1.55, 0),
+        Color = Color3.fromRGB(85, 87, 93), Material = Enum.Material.Metal,
+        CanCollide = false, CanQuery = false, CanTouch = false, Anchored = true,
+        TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth,
+    }, model)
+    model.PrimaryPart = head
+    model.Parent = Fol.tool
+    return model
+end
+
+function Sld.destroy(part, hitPos)
+    if not part or not part.Parent then return end
+    local t = part:GetAttribute("ConstructionType")
+    if not t then
+        -- обычная карта/земля/базплейт: разрушать НЕЛЬЗЯ
+        spawnDust(hitPos or part.Position, part.Color)
+        playSound("rbxasset://sounds/collide.wav", workspace, 0.3, 1.4)
+        return
+    end
+    if t == "C4" then
+        local mdl = part:FindFirstAncestorOfClass("Model")
+        if mdl then Boom.detonate(mdl) end
+        return
+    end
+    spawnDust(hitPos or part.Position, part.Color)
+    if t == "Window" then
+        local mdl = part:FindFirstAncestorOfClass("Model")
+        if mdl and Win.reg[mdl] then
+            Win.reg[mdl].broken = true
+            Win.reg[mdl].glass = nil
+        end
+        if part.Parent then part:Destroy() end
+    elseif t == "Door" then
+        local mdl = part:FindFirstAncestorOfClass("Model")
+        if mdl and Door.reg[mdl] then
+            Door.reg[mdl].broken = true
+        end
+        if part.Parent then part:Destroy() end
+    elseif t == "Furniture" then
+        local mdl = part:FindFirstAncestorOfClass("Model")
+        if mdl and mdl.Parent then mdl:Destroy() end
+    elseif t == "Brick" then
+        local mdl = part:FindFirstAncestorOfClass("Model")
+        if mdl and mdl:GetAttribute("ConstructionType") == "Brick" then
+            mdl:Destroy()
+        elseif part.Parent then
+            part:Destroy()
+        end
+    else
+        if part.Parent then part:Destroy() end
+    end
+    playSound("rbxasset://sounds/collide.wav", workspace, 0.7, 0.9)
+end
+
+function Sld.activate()
+    State.Sledge = { model = Sld.make() }
+end
+
+function Sld.exit()
+    if State.Sledge and State.Sledge.model and State.Sledge.model.Parent then
+        State.Sledge.model:Destroy()
+    end
+    State.Sledge = nil
+end
+
+-- ================= ПРОВОД / ТРУБА =================
+local Wires = {}
+
+function Wires.segment(a, b)
+    local dist = (b - a).Magnitude
+    if dist < 0.3 then return end
+    local mid = (a + b) / 2
+    local ctrl = mid - Vector3.new(0, dist * 0.12, 0)
+    local steps = math.clamp(math.ceil(dist / 0.6), 3, 60)
+    local prev = a
+    for i = 1, steps do
+        local t = i / steps
+        local p = (1 - t) * (1 - t) * a + 2 * (1 - t) * t * ctrl + t * t * b
+        local segLen = (p - prev).Magnitude
+        if segLen > 0.02 then
+            create("Part", {
+                Shape = Enum.PartType.Cylinder,
+                Size = Vector3.new(segLen + 0.02, 0.06, 0.06),
+                CFrame = CFrame.lookAt((prev + p) / 2, p) * CFrame.Angles(0, math.rad(90), 0),
+                Color = Color3.fromRGB(45, 45, 50), Material = Enum.Material.SmoothPlastic,
+                Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false,
+            }, Fol.wires)
+        end
+        prev = p
+    end
+    create("Part", {
+        Size = Vector3.new(0.3, 0.3, 0.3),
+        CFrame = CFrame.new(a),
+        Color = Color3.fromRGB(70, 70, 75), Material = Enum.Material.SmoothPlastic,
+        Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false,
+    }, Fol.wires)
+    capFolder(Fol.wires, Limits.wire)
+end
+
+function Wires.pipeSegment(a, b)
+    local dist = (b - a).Magnitude
+    if dist < 0.3 then return end
+    create("Part", {
+        Shape = Enum.PartType.Cylinder,
+        Size = Vector3.new(dist + 0.05, 0.4, 0.4),
+        CFrame = CFrame.lookAt((a + b) / 2, b) * CFrame.Angles(0, math.rad(90), 0),
+        Color = Color3.fromRGB(150, 152, 158), Material = Enum.Material.Metal,
+        Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false,
+    }, Fol.pipes)
+    create("Part", {
+        Shape = Enum.PartType.Ball, Size = Vector3.new(0.52, 0.52, 0.52),
+        CFrame = CFrame.new(a),
+        Color = Color3.fromRGB(120, 122, 128), Material = Enum.Material.Metal,
+        Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false,
+    }, Fol.pipes)
+    capFolder(Fol.pipes, Limits.pipe)
+end
+
+function Wires.exitMode()
+    State.NodeLast = nil
+    if State.LinePreview and State.LinePreview.Parent then
+        State.LinePreview:Destroy()
+    end
+    State.LinePreview = nil
+end
+
+-- ================= ГУБКА (ВЕДРО) =================
+local Spg = {}
+
+function Spg.make()
+    local model = Instance.new("Model")
+    local bucket = create("Part", {
+        Shape = Enum.PartType.Cylinder,
+        Size = Vector3.new(0.8, 0.72, 0.72),
+        CFrame = CFrame.new(0, 0, 0) * CFrame.Angles(0, 0, math.rad(90)),
+        Color = Color3.fromRGB(110, 112, 118), Material = Enum.Material.SmoothPlastic,
+        CanCollide = false, CanQuery = false, CanTouch = false, Anchored = true,
+        TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth,
+    }, model)
+    local water = create("Part", {
+        Shape = Enum.PartType.Cylinder,
+        Size = Vector3.new(0.1, 0.6, 0.6),
+        CFrame = CFrame.new(0, 0.3, 0) * CFrame.Angles(0, 0, math.rad(90)),
+        Color = Color3.fromRGB(80, 150, 220), Material = Enum.Material.SmoothPlastic,
+        Transparency = 0.25,
+        CanCollide = false, CanQuery = false, CanTouch = false, Anchored = true,
+        TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth,
+    }, model)
+    model.PrimaryPart = bucket
+    model.Parent = Fol.tool
+    return model
+end
+
+function Spg.clean(pos)
+    local removed = 0
+    for _, p in ipairs(Fol.paint:GetChildren()) do
+        if p.Parent and (p.Position - pos).Magnitude < 1.0 then
+            p:Destroy()
+            removed += 1
+            if removed >= 25 then break end
+        end
+    end
+    return removed
+end
+
+function Spg.activate()
+    State.Sponge = { model = Spg.make(), lastSnd = 0 }
+end
+
+function Spg.exit()
+    State.Cleaning = false
+    if State.Sponge and State.Sponge.model and State.Sponge.model.Parent then
+        State.Sponge.model:Destroy()
+    end
+    State.Sponge = nil
+end
+
+-- ================= C4 (визуал в руке) =================
+local function exitC4Held()
+    if State.C4Held and State.C4Held.Parent then
+        State.C4Held:Destroy()
+    end
+    State.C4Held = nil
+end
+
+-- ================= ВЕРЕВКА (хелперы) =================
+local Rope = {}
+
+function Rope.destroyPreview()
+    if State.RopePreview and State.RopePreview.Parent then
+        State.RopePreview:Destroy()
+    end
+    State.RopePreview = nil
+end
+
+-- ================= ОБОИ / КОВЕР =================
+local Roll = {}
+Roll.cfg = {
+    Wallpaper = {
+        folder = Fol.wallpaper, ctype = "Wallpaper",
+        rollLen = 1.8, rollDiam = 0.9, width = 1.8,
+        thickness = 0.06, overlap = 0.3, spacing = 0.22,
+        material = Enum.Material.SmoothPlastic,
+        palette = function() return Palettes.wp end,
+        colorGet = function() return State.WallpaperColor end,
+    },
+    Carpet = {
+        folder = Fol.carpet, ctype = "Carpet",
+        rollLen = 2.2, rollDiam = 1.1, width = 2.2,
+        thickness = 0.1, overlap = 0.3, spacing = 0.25,
+        material = Enum.Material.Fabric,
+        palette = function() return Palettes.carpet end,
+        colorGet = function() return State.CarpetColor end,
+    },
+}
+
+function Roll.activate(kind)
+    local cfg = Roll.cfg[kind]
+    local model = Instance.new("Model")
+    local rollPart = create("Part", {
+        Shape = Enum.PartType.Cylinder, Size = Vector3.new(cfg.rollLen, cfg.rollDiam, cfg.rollDiam),
+        Color = cfg.colorGet(), Material = Enum.Material.SmoothPlastic,
+        Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false,
+        TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth,
+    }, model)
+    local strip = create("Part", {
+        Size = Vector3.new(cfg.rollLen - 0.04, cfg.rollDiam * 1.3, 0.05),
+        Color = cfg.colorGet(), Material = Enum.Material.SmoothPlastic,
+        Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false,
+    }, model)
+    model.PrimaryPart = rollPart
+    model.Parent = Fol.tool
+    State.Roll = { kind = kind, model = model, strip = strip, rollPart = rollPart, angle = 0, fwd = nil, lastPos = nil }
+    cfg.palette().frame.Visible = true
+end
+
+function Roll.exit()
+    State.Rolling = false
+    State.Stroke = nil
+    Palettes.wp.frame.Visible = false
+    Palettes.carpet.frame.Visible = false
+    if State.Roll then
+        if State.Roll.model and State.Roll.model.Parent then
+            State.Roll.model:Destroy()
+        end
+        State.Roll = nil
+    end
+end
+
+-- ================= КРАСКА =================
+local function activatePaint()
+    Palettes.paint.frame.Visible = true
+end
+
+local function exitPaint()
+    State.IsPainting = false
+    State.Stroke = nil
+    Palettes.paint.frame.Visible = false
+end
+
+-- ================= ПЕРЕМЕЩЕНИЕ =================
+local Drag = {}
+
+function Drag.start(part, hitPos)
+    if not part or not part.Parent then return end
+    if part:GetAttribute("Mounted") or part:GetAttribute("Nailed") then return end
+    if part.Anchored then return end
+    State.IsDragging = true
+    local dragDist = (hitPos - camera.CFrame.Position).Magnitude
+    dragDist = math.clamp(dragDist, 4, 60)
+    local cp = RaycastParams.new()
+    cp.FilterType = Enum.RaycastFilterType.Exclude
+    local ex = baseExcludeList()
+    local mdl = part:FindFirstAncestorOfClass("Model")
+    table.insert(ex, mdl or part)
+    local char = player.Character
+    if char then table.insert(ex, char) end
+    cp.FilterDescendantsInstances = ex
+    local look = part.CFrame.LookVector
+    local yaw0 = math.atan2(-look.X, -look.Z)
+    State.Drag = {
+        part = part,
+        grabOffset = part.Position - hitPos,
+        dragDist = dragDist,
+        clampParams = cp,
+        targetYaw = yaw0, shownYaw = yaw0,
+    }
+    hideHighlight()
+end
+
+function Drag.endNow()
+    local d = State.Drag
+    State.IsDragging = false
+    State.Drag = nil
+    if d and d.part and d.part.Parent then
+        d.part.AssemblyAngularVelocity = Vector3.zero
+        d.part.AssemblyLinearVelocity = d.part.AssemblyLinearVelocity * 0.35
+    end
+end
+
+function Drag.adjustHeight(delta)
+    local d = State.Drag
+    if d then
+        d.dragDist = math.clamp(d.dragDist + delta, 3, 90)
+    end
+end
+
+-- ================= ЗАМОРОЗКА (F) =================
+local Frz = {}
+
+function Frz.start(part)
+    if not part or not part.Parent then return end
+    if part:GetAttribute("Mounted") or part:GetAttribute("Nailed") then return end
+    if part.Anchored then return end
+    local prev = State.Freeze
+    if prev and prev.part and prev.part.Parent then
+        prev.part:SetAttribute("Frozen", nil)
+        prev.part.Anchored = false
+    end
+    part.Anchored = true
+    part:SetAttribute("Frozen", true)
+    part.AssemblyAngularVelocity = Vector3.zero
+    part.AssemblyLinearVelocity = Vector3.zero
+    State.Freeze = { part = part, t = 10 }
+    freezeHighlight.Adornee = part:FindFirstAncestorOfClass("Model") or part
+    freezeHighlight.Enabled = true
+    UI.freeze.Visible = true
+    UI.freezeFill.Size = UDim2.new(1, 0, 1, 0)
+end
+
+function Frz.endNow()
+    local F = State.Freeze
+    State.Freeze = nil
+    UI.freeze.Visible = false
+    freezeHighlight.Enabled = false
+    freezeHighlight.Adornee = nil
+    if F and F.part and F.part.Parent then
+        F.part:SetAttribute("Frozen", nil)
+        F.part.Anchored = false
+    end
+end
+
+function Frz.action()
+    local target
+    if State.Drag and State.Drag.part then
+        target = State.Drag.part
+        Drag.endNow()
+    else
+        local hit = State.MouseHit
+        if hit then
+            local t = hit.Instance:GetAttribute("ConstructionType")
+            if t == "Brick" then
+                local mdl = hit.Instance.Parent
+                target = mdl and mdl.PrimaryPart
+            elseif t == "Board" then
+                target = hit.Instance
+            elseif t == "Furniture" then
+                local mdl = hit.Instance:FindFirstAncestorOfClass("Model")
+                target = mdl and mdl.PrimaryPart
+            end
+        end
+    end
+    if target then
+        Frz.start(target)
+        showHint("ЗАМОРОЖЕНО НА 10 СЕК: гвоздь/цемент/клей — и закрепится навсегда")
+    end
+end
+
+-- ================= РАЗМЕЩЕНИЕ (призрак) =================
+local Plc = {}
+Plc.sizes = {
+    Wall = Vector3.new(10, 7, 0.6),
+    Door = Vector3.new(Door.W, Door.H, 0.5),
+    Window = Vector3.new(3, 2.6, 0.35),
+    BigWindow = Vector3.new(6, 4, 0.4),
+    Foundation = Vector3.new(14, 0.8, 14),
+    Ceiling = Vector3.new(12, 0.6, 12),
+    Table = Vector3.new(3.4, 2.5, 2.2),
+    Chair = Vector3.new(1.6, 3.4, 1.7),
+    Sofa = Vector3.new(5.2, 2.8, 2.2),
+}
+
+function Plc.enter(kind)
+    local ghost = create("Part", {
+        Size = Plc.sizes[kind],
+        Color = Color3.fromRGB(120, 255, 140), Material = Enum.Material.SmoothPlastic,
+        Transparency = 1, Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false,
+    }, Fol.fx)
+    State.Place = { kind = kind, ghost = ghost, cf = nil }
+end
+
+function Plc.exit()
+    local P = State.Place
+    State.Place = nil
+    if P and P.ghost and P.ghost.Parent then
+        P.ghost:Destroy()
+    end
+end
+
+function Plc.build(kind, bottomCF)
+    if kind == "Wall" then
+        Fab.wall(bottomCF)
+    elseif kind == "Door" then
+        Door.make(bottomCF)
+    elseif kind == "Window" then
+        Win.make(bottomCF, false)
+    elseif kind == "BigWindow" then
+        Win.make(bottomCF, true)
+    elseif kind == "Foundation" then
+        Fab.foundation(bottomCF)
+    elseif kind == "Ceiling" then
+        Fab.ceiling(bottomCF)
+    elseif kind == "Table" then
+        Fab.table(bottomCF)
+    elseif kind == "Chair" then
+        Fab.chair(bottomCF)
+    elseif kind == "Sofa" then
+        Fab.sofa(bottomCF)
+    end
+    playSound("rbxasset://sounds/button.wav", workspace, 0.5)
+end
+
+function Plc.enterMode(kind)
+    resetModes()
+    State.Mode = "Place"
+    Plc.enter(kind)
+    showHint("РАЗМЕЩЕНИЕ: клик — поставить (можно несколько подряд) | ESC — выйти")
+end
+
+local function spawnPosition(height)
+    local hit = State.MouseHit
+    if hit then
+        return CFrame.new(hit.Position + Vector3.new(0, height, 0))
+            * CFrame.Angles(0, math.rad(math.random(-30, 30)), 0)
+    end
+    local c = camera.CFrame
+    return CFrame.new(c.Position + c.LookVector * 8 + Vector3.new(0, 2, 0))
+end
+
+-- ================= МАЗКИ / ПОЛОСЫ =================
+local StrokeF = {}
+
+function StrokeF.strip(folder, a, b, normal, width, thickness, color, ctype, overlap)
+    local dir = b - a
+    local len = dir.Magnitude
+    if len < 0.01 then return end
+    dir = dir / len
+    local mid = (a + b) / 2 + normal * (thickness / 2 + 0.015)
+    local p = create("Part", {
+        Size = Vector3.new(len + (overlap or 0.05), thickness, width),
+        CFrame = CFrame.lookAt(mid, mid + dir, normal),
+        Color = color, Material = Enum.Material.SmoothPlastic,
+        Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false,
+        TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth,
+    }, folder)
+    p:SetAttribute("ConstructionType", ctype)
+    return p
+end
+
+function StrokeF.process(cfg)
+    local hit = State.MouseHit
+    local st = State.Stroke
+    if not hit or not st then return end
+    local ctype = hit.Instance:GetAttribute("ConstructionType")
+    if not cfg.validTypes[ctype] then return end
+    if st.instance ~= hit.Instance or st.normal:Dot(hit.Normal) < 0.8 then
+        st.instance = hit.Instance
+        st.normal = hit.Normal
+        st.lastPos = hit.Position
+        return
+    end
+    local delta = hit.Position - st.lastPos
+    if delta.Magnitude < cfg.spacing then return end
+    if math.abs(delta.Unit:Dot(st.normal)) > 0.92 then return end
+    StrokeF.strip(cfg.folder, st.lastPos, hit.Position, st.normal, cfg.width, cfg.thickness, cfg.colorFn(), cfg.ctype, cfg.overlap)
+    st.lastPos = hit.Position
+    capFolder(cfg.folder, cfg.cap)
+end
+
+function StrokeF.dab(pos, normal, width, color)
+    local t = 0.045
+    local p = create("Part", {
+        Size = Vector3.new(width, width, t),
+        CFrame = CFrame.lookAt(pos + normal * (t / 2 + 0.008), pos + normal * 2, surfaceTangent(normal)),
+        Color = color, Material = Enum.Material.SmoothPlastic,
+        Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false,
+        TopSurface = Enum.SurfaceType.Smooth, BottomSurface = Enum.SurfaceType.Smooth,
+    }, Fol.paint)
+    makeSphereMesh(p)
+    p:SetAttribute("ConstructionType", "Paint")
+    return p
+end
+
+function StrokeF.processDab(cfg)
+    local hit = State.MouseHit
+    local st = State.Stroke
+    if not hit or not st then return end
+    local ctype = hit.Instance:GetAttribute("ConstructionType")
+    if not cfg.validTypes[ctype] then return end
+    if st.instance ~= hit.Instance or st.normal:Dot(hit.Normal) < 0.8 then
+        st.instance = hit.Instance
+        st.normal = hit.Normal
+        st.lastPos = hit.Position
+        StrokeF.dab(hit.Position, hit.Normal, cfg.width, cfg.colorFn())
+        return
+    end
+    local delta = hit.Position - st.lastPos
+    local dist = delta.Magnitude
+    if dist < cfg.spacing then return end
+    if math.abs(delta.Unit:Dot(st.normal)) > 0.92 then return end
+    local steps = math.ceil(dist / cfg.spacing)
+    for i = 1, steps do
+        StrokeF.dab(st.lastPos:Lerp(hit.Position, i / steps), hit.Normal, cfg.width, cfg.colorFn())
+    end
+    st.lastPos = hit.Position
+    capFolder(cfg.folder, cfg.cap)
+end
+
+-- ================= СБРОС / РЕЖИМЫ =================
+resetModes = function()
+    if State.IsDragging then Drag.endNow() end
+    Cut.exit()
+    Grind.exit()
+    Roll.exit()
+    exitPaint()
+    Hmr.exit()
+    Sld.exit()
+    State.RopeSel = nil
+    Rope.destroyPreview()
+    Spg.exit()
+    exitC4Held()
+    Wires.exitMode()
+    Plc.exit()
+    Adh.deactivate()
+    hideHighlight()
+    hideHint()
+    hideProgress()
+    State.Mode = "None"
+    State.Stroke = nil
+    State.HoveredPart = nil
+    State.Cleaning = false
+    updateToolButtons()
+    updateAdhesiveButtons()
+end
+
+local function selectTool(tool)
+    if State.Mode == tool then
+        resetModes()
+        return
+    end
+    resetModes()
+    State.Mode = tool
+    local hints = {
+        Cutter = "РЕЗАК: НАВЕДИ НА КИРПИЧ И НАЖМИ ЛКМ",
+        Grinder = "БОЛГАРКА: НАВЕДИ НА ДОСКУ И НАЖМИ ЛКМ",
+        Wallpaper = "ОБОИ: выбери цвет, ЗАЖМИ И КАТИ РУЛОН ПО СТЕНЕ",
+        Carpet = "КОВЕР: выбери цвет, ЗАЖМИ И КАТИ РУЛОН ПО ПОЛУ",
+        Paint = "КРАСКА: ЗАЖМИ И ВОДИ — КРУГЛЫЕ МАЗКИ",
+        Hammer = "МОЛОТОК: КЛИК ПО ДОСКЕ/КИРПИЧУ — ГВОЗДЬ (F — заморозка)",
+        Sledge = "КУВАЛДА: КЛИК — УДАЛИТЬ БЛОК ПОСТРОЙКИ (с пылью)",
+        Rope = "ВЕРЕВКА: ЛКМ ПО ПЕРВОМУ ОБЪЕКТУ, ЗАТЕМ ПО ВТОРОМУ | ESC — ОТМЕНА",
+        Sponge = "ГУБКА: ЗАЖМИ И ВОДИ — СМЫВАЕТ КРАСКУ",
+        C4 = "C4: КЛИК — ПРИКЛЕИТЬ. КЛИК ПО C4 — ВЗРЫВ!",
+        Wire = "ПРОВОД: КЛИК — точка, следующий клик — провод (цепочкой). ESC — конец",
+        Pipe = "ТРУБА: КЛИК — точка, следующий клик — сегмент (цепочкой). ESC — конец",
+    }
+    if tool == "Wallpaper" then
+        Roll.activate("Wallpaper")
+    elseif tool == "Carpet" then
+        Roll.activate("Carpet")
+    elseif tool == "Paint" then
+        activatePaint()
+    elseif tool == "Hammer" then
+        Hmr.activate()
+    elseif tool == "Sledge" then
+        Sld.activate()
+    elseif tool == "Sponge" then
+        Spg.activate()
+    elseif tool == "C4" then
+        State.C4Held = create("Part", {
+            Size = Vector3.new(0.55, 0.18, 0.4),
+            Color = Color3.fromRGB(62, 72, 52), Material = Enum.Material.SmoothPlastic,
+            Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false,
+        }, Fol.tool)
+    end
+    showHint(hints[tool] or "")
+    updateToolButtons()
+end
+
+local function switchTab(key)
+    resetModes()
+    State.CurrentTab = key
+    for k, panel in pairs(panels) do
+        panel.Visible = (k == key)
+    end
+    updateTabButtons()
+end
+
+-- ================= ОБРАБОТЧИКИ КЛИКА ПО РЕЖИМАМ =================
+local MD = {}
+
+function MD.adhesive(hit, mode)
+    if mode == "Glue" and hit then
+        local mdl = hit.Instance:FindFirstAncestorOfClass("Model")
+        if mdl and Win.reg[mdl] and Win.reg[mdl].broken then
+            Win.repair(mdl)
+            return
+        end
+    end
+    State.Cementing = true
+    State.LastCementPos = nil
+    State.LastCementNrm = nil
+    if hit then
+        Adh.depositStart(Adh.cfg[mode], hit.Position, hit.Normal, hit.Instance)
+        State.LastCementPos = hit.Position
+        State.LastCementNrm = hit.Normal
+    end
+end
+
+function MD.cutter()
+    if State.HoveredPart and State.HoveredPart:GetAttribute("ConstructionType") == "Brick" then
+        Cut.enter(State.HoveredPart.Parent)
+    end
+end
+
+function MD.grinder(hit)
+    if State.HoveredPart and State.HoveredPart:GetAttribute("ConstructionType") == "Board" and hit then
+        Grind.enter(State.HoveredPart, hit.Position, hit.Normal)
+    end
+end
+
+function MD.hammer(hit)
+    if hit then
+        local t = hit.Instance:GetAttribute("ConstructionType")
+        if t == "Board" or t == "Brick" or t == "Furniture" then
+            State.HammerSwing = { t = 0, part = hit.Instance, pos = hit.Position, normal = hit.Normal, applied = false }
+        end
+    end
+end
+
+function MD.sledge(hit)
+    if hit then
+        local t = hit.Instance:GetAttribute("ConstructionType")
+        if SMASHABLE[t] then
+            Sld.destroy(hit.Instance, hit.Position)
+        end
+    end
+end
+
+function MD.wirepipe(hit, mode)
+    if hit then
+        if State.NodeLast then
+            if mode == "Wire" then
+                Wires.segment(State.NodeLast, hit.Position)
+            else
+                Wires.pipeSegment(State.NodeLast, hit.Position)
+            end
+        end
+        State.NodeLast = hit.Position
+    end
+end
+
+function MD.c4(hit)
+    if hit and hit.Instance:IsA("BasePart") then
+        local t = hit.Instance:GetAttribute("ConstructionType")
+        if t == "C4" then
+            local mdl = hit.Instance:FindFirstAncestorOfClass("Model")
+            if mdl and Boom.reg[mdl] then
+                Boom.detonate(mdl)
+            end
+        else
+            Boom.makeC4(hit.Position, hit.Normal, hit.Instance)
+        end
+    end
+end
+
+function MD.rope(hit)
+    if hit and hit.Instance:IsA("BasePart") and hit.Instance:GetAttribute("ConstructionType") then
+        if not State.RopeSel then
+            State.RopeSel = { part = hit.Instance, pos = hit.Position }
+            showHint("ВЕРЕВКА: ТЕПЕРЬ ЛКМ ПО ВТОРОМУ ОБЪЕКТУ | ESC — ОТМЕНА")
+        elseif State.RopeSel.part and State.RopeSel.part.Parent then
+            local a = State.RopeSel
+            -- удаляем неоновую линию-предпросмотр ДО создания веревки
+            Rope.destroyPreview()
+            if hit.Instance ~= a.part then
+                local att0 = Instance.new("Attachment")
+                att0.Parent = a.part
+                att0.WorldPosition = a.pos
+                local att1 = Instance.new("Attachment")
+                att1.Parent = hit.Instance
+                att1.WorldPosition = hit.Position
+                local rope = Instance.new("RopeConstraint")
+                rope.Attachment0 = att0
+                rope.Attachment1 = att1
+                rope.Length = math.max(1, (a.pos - hit.Position).Magnitude * 1.15)
+                rope.Visible = true
+                rope.Thickness = 0.12
+                rope.Color = BrickColor.new("Reddish brown")
+                rope.Parent = Fol.fx
+                playSound("rbxasset://sounds/electronicpingshort.wav", rope, 0.4)
+            end
+            State.RopeSel = nil
+            showHint("ВЕРЕВКА ЗАВЯЗАНА | следующий клик — новая веревка, ESC — выйти")
+        end
+    end
+end
+
+function MD.none(hit)
+    if hit then
+        local t = hit.Instance:GetAttribute("ConstructionType")
+        if t == "Door" then
+            local mdl = hit.Instance:FindFirstAncestorOfClass("Model")
+            if mdl and Door.reg[mdl] then
+                Door.toggle(mdl)
+                return
+            end
+        end
+    end
+    if State.HoveredPart and hit then
+        local t = State.HoveredPart:GetAttribute("ConstructionType")
+        if t == "Brick" then
+            local mdl = State.HoveredPart.Parent
+            if mdl and mdl.PrimaryPart then
+                Drag.start(mdl.PrimaryPart, hit.Position)
+            end
+        elseif t == "Board" then
+            Drag.start(State.HoveredPart, hit.Position)
+        elseif t == "Furniture" then
+            local mdl = State.HoveredPart:FindFirstAncestorOfClass("Model")
+            if mdl and mdl.PrimaryPart then
+                Drag.start(mdl.PrimaryPart, hit.Position)
+            end
+        end
+    end
+end
+
+local function onMouseDown()
+    -- пересчитываем луч в момент нажатия (важно для телефона)
+    local excludePart
+    if State.Drag then
+        local m = State.Drag.part:FindFirstAncestorOfClass("Model")
+        excludePart = m or State.Drag.part
+    end
+    if State.Cut then excludePart = State.Cut.model end
+    local hit = mouseRay(excludePart)
+    State.MouseHit = hit
+
+    if State.IsCutting then
+        Cut.perform()
+        return
+    end
+    if State.HammerSwing then
+        return
+    end
+    if State.GrinderActive then
+        State.Grinding = true
+        return
+    end
+    local m = State.Mode
+    if m == "Cement" or m == "Glue" then
+        MD.adhesive(hit, m)
+    elseif m == "Place" then
+        local P = State.Place
+        if P and P.cf then
+            Plc.build(P.kind, P.cf)
+        end
+    elseif m == "Cutter" then
+        MD.cutter()
+    elseif m == "Grinder" then
+        MD.grinder(hit)
+    elseif m == "Hammer" then
+        MD.hammer(hit)
+    elseif m == "Sledge" then
+        MD.sledge(hit)
+    elseif m == "Wire" or m == "Pipe" then
+        MD.wirepipe(hit, m)
+    elseif m == "C4" then
+        MD.c4(hit)
+    elseif m == "Sponge" then
+        State.Cleaning = true
+    elseif m == "Rope" then
+        MD.rope(hit)
+    elseif m == "Wallpaper" or m == "Carpet" then
+        if hit and WALLABLE[hit.Instance:GetAttribute("ConstructionType")] then
+            State.Rolling = true
+            State.Stroke = { instance = hit.Instance, normal = hit.Normal, lastPos = hit.Position }
+        end
+    elseif m == "Paint" then
+        if hit and PAINTABLE[hit.Instance:GetAttribute("ConstructionType")] then
+            State.IsPainting = true
+            State.Stroke = { instance = hit.Instance, normal = hit.Normal, lastPos = hit.Position }
+        end
+    else
+        MD.none(hit)
+    end
+end
+
+local function onMouseUp()
+    if State.IsDragging then Drag.endNow() end
+    State.Cementing = false
+    State.Grinding = false
+    State.Rolling = false
+    State.IsPainting = false
+    State.Cleaning = false
+    State.Stroke = nil
+end
+
+-- ================= КАДРОВЫЕ ОБНОВЛЕНИЯ =================
+local Frame = {}
+
+function Frame.hover(hit)
+    local adornee, col
+    if not State.IsCutting and not State.GrinderActive and not State.IsDragging and hit then
+        local ctype = hit.Instance:GetAttribute("ConstructionType")
+        if State.Mode == "None" then
+            if ctype == "Brick" or ctype == "Board" then
+                local busy
+                if ctype == "Brick" then
+                    local mdl = hit.Instance.Parent
+                    local mp = mdl and mdl.PrimaryPart
+                    busy = mp and (mp:GetAttribute("Mounted") or mp:GetAttribute("Nailed") or mp:GetAttribute("Frozen"))
+                    adornee = mdl
+                else
+                    busy = hit.Instance:GetAttribute("Mounted") or hit.Instance:GetAttribute("Nailed") or hit.Instance:GetAttribute("Frozen")
+                    adornee = hit.Instance
+                end
+                if busy then adornee = nil end
+                col = Color3.fromRGB(255, 255, 255)
+            elseif ctype == "Door" then
+                adornee = hit.Instance
+                col = Color3.fromRGB(150, 220, 150)
+            elseif ctype == "Furniture" then
+                local mdl = hit.Instance:FindFirstAncestorOfClass("Model")
+                local mp = mdl and mdl.PrimaryPart
+                if not (mp and mp:GetAttribute("Frozen")) then
+                    adornee = mdl
+                    col = Color3.fromRGB(255, 255, 255)
+                end
+            end
+        elseif State.Mode == "Cutter" and ctype == "Brick" then
+            adornee = hit.Instance.Parent
+            col = Color3.fromRGB(90, 200, 255)
+        elseif State.Mode == "Grinder" and ctype == "Board" then
+            adornee = hit.Instance
+            col = Color3.fromRGB(255, 160, 60)
+        elseif State.Mode == "Hammer" and (ctype == "Board" or ctype == "Brick" or ctype == "Furniture") then
+            adornee = hit.Instance
+            col = Color3.fromRGB(255, 230, 140)
+        elseif State.Mode == "Sledge" and SMASHABLE[ctype] then
+            adornee = hit.Instance
+            col = Color3.fromRGB(255, 90, 70)
+        elseif State.Mode == "C4" and ctype then
+            adornee = hit.Instance
+            col = Color3.fromRGB(255, 160, 40)
+        elseif State.Mode == "Sponge" and PAINTABLE[ctype] then
+            adornee = hit.Instance
+            col = Color3.fromRGB(120, 200, 255)
+        elseif State.Mode == "Rope" and ctype then
+            adornee = hit.Instance
+            col = Color3.fromRGB(200, 200, 255)
+        end
+    end
+    State.HoveredPart = adornee and hit and hit.Instance or nil
+    if adornee then
+        showHighlight(adornee, col)
+    else
+        hideHighlight()
+    end
+end
+
+function Frame.ghost(hit)
+    local P = State.Place
+    if P and P.ghost and P.ghost.Parent then
+        if hit then
+            local cf = CFrame.new(hit.Position) * CFrame.Angles(0, facingYaw(), 0)
+            P.cf = cf
+            P.ghost.CFrame = cf * CFrame.new(0, P.ghost.Size.Y / 2, 0)
+            P.ghost.Transparency = 0.6
+        else
+            P.cf = nil
+            P.ghost.Transparency = 1
+        end
+    end
+end
+
+function Frame.cutBand(dt)
+    local cut = State.Cut
+    if cut and cut.band and cut.band.Parent and cut.main and cut.main.Parent then
+        cut.t += dt
+        local amp = math.max(0.05, cut.main.Size.X / 2 - 0.18)
+        cut.offset = math.sin(cut.t * 2.4) * amp
+        cut.band.CFrame = cut.main.CFrame * CFrame.new(cut.offset, 0, 0)
+    end
+end
+
+function Frame.grinder(dt, hit)
+    local g = State.Grind
+    if not g then return end
+    local mloc = UserInputService:GetMouseLocation()
+    local dy = mloc.Y - (g.lastMouseY or mloc.Y)
+    g.lastMouseY = mloc.Y
+    local onBoard = (hit and hit.Instance == g.board and g.board.Parent ~= nil) or false
+    if onBoard then
+        g.lastPoint = hit.Position
+        g.normal = hit.Normal
+        if State.Grinding and not g.cutOffset then
+            local axis = g.board.CFrame.RightVector
+            g.cutOffset = (hit.Position - g.board.Position):Dot(axis)
+            g.cutLine = create("Part", {
+                Size = Vector3.new(0.09, 0.06, g.board.Size.Z + 0.08),
+                Color = Color3.fromRGB(30, 30, 30),
+                Material = Enum.Material.SmoothPlastic,
+                Transparency = 0.2,
+                Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false,
+            }, Fol.fx)
+        end
+        if State.Grinding and g.cutOffset and dy > 0 then
+            g.progress = math.min(g.progress + dy, g.needed)
+            UI.progressFill.Size = UDim2.new(math.clamp(g.progress / g.needed, 0, 1), 0, 1, 0)
+            if g.progress >= g.needed then
+                Grind.complete()
+                return
+            end
+        end
+    end
+    if g.model and g.model.Parent then
+        g.yaw += (g.yawTarget - g.yaw) * math.min(dt * 10, 1)
+        local up = g.normal or Vector3.new(0, 1, 0)
+        local fwd = Vector3.new(math.cos(g.yaw), 0, math.sin(g.yaw))
+        g.model:PivotTo(CFrame.lookAt(g.lastPoint + up * 0.05, g.lastPoint + up * 0.05 + fwd, up))
+    end
+    if g.cutLine and g.cutLine.Parent and g.board and g.board.Parent then
+        g.cutLine.CFrame = g.board.CFrame * CFrame.new(g.cutOffset or 0, g.board.Size.Y / 2 + 0.04, 0)
+    end
+    if g.sparks then
+        g.sparks.Enabled = State.Grinding and onBoard
+    end
+end
+
+function Frame.toolPose(model, hit, lift, angle)
+    if not (model and model.Parent and hit) then return end
+    local pos, nrm = hit.Position, hit.Normal
+    local P = pos + nrm * lift
+    local camLook = camera.CFrame.LookVector
+    local tangent = camLook - nrm * camLook:Dot(nrm)
+    if tangent.Magnitude < 0.05 then
+        tangent = surfaceTangent(nrm)
+    else
+        tangent = tangent.Unit
+    end
+    model:PivotTo(CFrame.lookAt(P, P + tangent, nrm) * CFrame.Angles(angle, 0, 0))
+end
+
+function Frame.hammer(dt, hit)
+    local H = State.Hammer
+    if not (H and H.model and H.model.Parent) then return end
+    local S = State.HammerSwing
+    if S then
+        local done = Hmr.runSwing(H.model, S, 0.35, 0.95, -math.rad(78), dt, function()
+            Hmr.nail(S.part, S.pos, S.normal)
+        end)
+        if done then State.HammerSwing = nil end
+    else
+        Frame.toolPose(H.model, hit, 0.95, -math.rad(78))
+    end
+end
+
+function Frame.sledge(hit)
+    local SL = State.Sledge
+    if SL and SL.model and SL.model.Parent then
+        Frame.toolPose(SL.model, hit, 1.25, -math.rad(105))
+    end
+end
+
+function Frame.sponge(dt, hit)
+    local SP = State.Sponge
+    if not (SP and SP.model and SP.model.Parent) then return end
+    Frame.toolPose(SP.model, hit, 1.1, 0)
+    if State.Cleaning and hit then
+        local removed = Spg.clean(hit.Position)
+        if removed > 0 then
+            local now = os.clock()
+            if now - SP.lastSnd > 0.25 then
+                SP.lastSnd = now
+                playSound("rbxasset://sounds/impact_water.mp3", workspace, 0.4, 1 + math.random() * 0.3)
+            end
+        end
+    end
+end
+
+function Frame.c4Held(hit)
+    if State.C4Held and State.C4Held.Parent then
+        if hit then
+            State.C4Held.CFrame = CFrame.new(hit.Position + hit.Normal * 0.5) * CFrame.Angles(0, facingYaw(), 0)
+            State.C4Held.Transparency = 0.3
+        else
+            local c = camera.CFrame
+            State.C4Held.CFrame = CFrame.new(c.Position + c.LookVector * 6) * CFrame.Angles(0, facingYaw(), 0)
+            State.C4Held.Transparency = 0.6
+        end
+    end
+end
+
+function Frame.wirePreview(hit)
+    if (State.Mode == "Wire" or State.Mode == "Pipe") and State.NodeLast then
+        local lp = State.LinePreview
+        if not lp or not lp.Parent then
+            lp = create("Part", {
+                Size = Vector3.new(0.09, 0.09, 1),
+                Color = Color3.fromRGB(90, 90, 100), Material = Enum.Material.SmoothPlastic,
+                Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false,
+            }, Fol.fx)
+            State.LinePreview = lp
+        end
+        local b = hit and hit.Position or (camera.CFrame.Position + camera.CFrame.LookVector * 10)
+        local dist = (State.NodeLast - b).Magnitude
+        if dist > 0.1 then
+            lp.Size = Vector3.new(0.09, 0.09, dist)
+            lp.CFrame = CFrame.lookAt((State.NodeLast + b) / 2, b)
+        end
+    elseif State.LinePreview and State.LinePreview.Parent then
+        State.LinePreview:Destroy()
+        State.LinePreview = nil
+    end
+end
+
+function Frame.ropePreview(hit)
+    if State.Mode == "Rope" and State.RopeSel then
+        -- временная линия выбора: тонкая веревочная (НЕ неон), видна только пока выбираешь второй объект
+        local rp = State.RopePreview
+        if not rp or not rp.Parent then
+            rp = create("Part", {
+                Size = Vector3.new(0.05, 0.05, 1),
+                Color = Color3.fromRGB(150, 110, 80), Material = Enum.Material.SmoothPlastic,
+                Transparency = 0.35,
+                Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false,
+            }, Fol.fx)
+            State.RopePreview = rp
+        end
+        local a = State.RopeSel.pos
+        local bpos = hit and hit.Position or (camera.CFrame.Position + camera.CFrame.LookVector * 12)
+        local dist = (a - bpos).Magnitude
+        if dist > 0.1 then
+            rp.Size = Vector3.new(0.05, 0.05, dist)
+            rp.CFrame = CFrame.lookAt((a + bpos) / 2, bpos)
+        end
+    end
+end
+
+function Frame.adhPreview(hit)
+    if (State.Mode == "Cement" or State.Mode == "Glue") and Adh.preview then
+        local cfg = Adh.cfg[State.Mode]
+        if hit then
+            local fullH = cfg.visH / cfg.ratio
+            local center = Adh.center(hit.Position, hit.Normal, cfg.visH, cfg.ratio)
+            Adh.preview.Size = Vector3.new(cfg.width, fullH, 0.5)
+            Adh.preview.Color = cfg.color
+            Adh.preview.Material = cfg.material
+            Adh.preview.CFrame = CFrame.lookAt(center, center + surfaceTangent(hit.Normal), hit.Normal)
+            Adh.preview.Transparency = 0.5
+        else
+            Adh.preview.Transparency = 1
+        end
+    end
+end
+
+function Frame.roll(hit)
+    local R = State.Roll
+    if not (R and R.model and R.model.Parent) then return end
+    local cfg = Roll.cfg[R.kind]
+    if R.rollPart and R.rollPart.Parent then
+        R.rollPart.Color = cfg.colorGet()
+    end
+    if R.strip and R.strip.Parent then
+        R.strip.Color = cfg.colorGet()
+    end
+    local pos, nrm, fwd
+    if State.Rolling and State.Stroke then
+        nrm = State.Stroke.normal
+        pos = State.Stroke.lastPos + nrm * (cfg.rollDiam / 2)
+        local lp = State.Stroke.lastPos
+        if R.lastPos then
+            local dvec = lp - R.lastPos
+            local flat = dvec - nrm * dvec:Dot(nrm)
+            local m = flat.Magnitude
+            if m > 0.02 then
+                R.fwd = flat / m
+                R.angle += m / (cfg.rollDiam / 2)
+            end
+        end
+        R.lastPos = lp
+        fwd = R.fwd
+    else
+        R.lastPos = nil
+        R.fwd = nil
+        R.angle = 0
+        if hit then
+            pos = hit.Position + hit.Normal * (cfg.rollDiam / 2 + 0.05)
+            nrm = hit.Normal
+        else
+            local c = camera.CFrame
+            pos = c.Position + c.LookVector * 6
+            nrm = Vector3.new(0, 1, 0)
+        end
+        fwd = nil
+    end
+    local up = nrm
+    local f = fwd or surfaceTangent(nrm)
+    R.model:PivotTo(CFrame.lookAt(pos, pos + f, up) * CFrame.Angles(R.angle, 0, 0))
+    if R.strip and R.strip.Parent then
+        local sp = pos - up * (cfg.rollDiam / 2 + 0.3)
+        R.strip.CFrame = CFrame.lookAt(sp, sp + f, up)
+    end
+end
+
+function Frame.rollingStroke()
+    if State.Rolling and State.Roll then
+        local cfg = Roll.cfg[State.Roll.kind]
+        StrokeF.process({
+            folder = cfg.folder,
+            validTypes = WALLABLE,
+            width = cfg.width,
+            thickness = cfg.thickness,
+            spacing = cfg.spacing,
+            overlap = cfg.overlap,
+            cap = Limits.roll,
+            ctype = cfg.ctype,
+            colorFn = cfg.colorGet,
+        })
+    end
+end
+
+function Frame.painting()
+    if State.IsPainting then
+        local width = (State.PaintTool == "Roller") and 0.85 or 0.32
+        StrokeF.processDab({
+            folder = Fol.paint,
+            validTypes = PAINTABLE,
+            width = width,
+            spacing = width * 0.42,
+            cap = Limits.paint,
+            colorFn = function()
+                return State.PaintColor
+            end,
+        })
+    end
+end
+
+function Frame.cementing(hit)
+    if State.Cementing and (State.Mode == "Cement" or State.Mode == "Glue") and hit then
+        local cfg = Adh.cfg[State.Mode]
+        local n = hit.Normal
+        if State.LastCementPos then
+            local nChanged = (State.LastCementNrm and State.LastCementNrm:Dot(n) < 0.6) or false
+            if nChanged then
+                Adh.depositStart(cfg, hit.Position, n, hit.Instance)
+                State.LastCementPos = hit.Position
+                State.LastCementNrm = n
+            elseif Adh.depositSegment(cfg, State.LastCementPos, hit.Position, n, hit.Instance) then
+                State.LastCementPos = hit.Position
+                State.LastCementNrm = n
+            end
+        else
+            Adh.depositStart(cfg, hit.Position, n, hit.Instance)
+            State.LastCementPos = hit.Position
+            State.LastCementNrm = n
+        end
+        capFolder(cfg.folder, Limits.cement)
+    end
+end
+
+function Frame.freezeTimer(dt)
+    local F = State.Freeze
+    if F then
+        if not F.part or not F.part.Parent then
+            Frz.endNow()
+        else
+            F.t -= dt
+            if F.t <= 0 then
+                Frz.endNow()
+            else
+                UI.freezeFill.Size = UDim2.new(F.t / 10, 0, 1, 0)
+                UI.freezeLabel.Text = ("ЗАМОРОЗКА: %.1f"):format(F.t)
+            end
+        end
+    end
+end
+
+-- ================= ГЛАВНЫЙ ЦИКЛ КАДРА =================
+RunService.RenderStepped:Connect(function(dt)
+    camera = workspace.CurrentCamera or camera
+
+    local excludePart
+    if State.Drag then
+        local m = State.Drag.part:FindFirstAncestorOfClass("Model")
+        excludePart = m or State.Drag.part
+    end
+    if State.Cut then excludePart = State.Cut.model end
+    local hit = mouseRay(excludePart)
+    State.MouseHit = hit
+
+    Frame.hover(hit)
+    Frame.ghost(hit)
+    Frame.cutBand(dt)
+    Frame.grinder(dt, hit)
+    Frame.hammer(dt, hit)
+    Frame.sledge(hit)
+    Frame.sponge(dt, hit)
+    Frame.c4Held(hit)
+    Frame.wirePreview(hit)
+    Frame.ropePreview(hit)
+    Frame.adhPreview(hit)
+    Frame.roll(hit)
+    Frame.rollingStroke()
+    Frame.painting()
+    Frame.cementing(hit)
+    Frame.freezeTimer(dt)
+end)
+
+-- ================= ФИЗИКА =================
+RunService.Heartbeat:Connect(function(dt)
+    -- гасим бешеное вращение деталей
+    for _, inst in ipairs(Fol.construction:GetChildren()) do
+        local p
+        if inst:IsA("BasePart") then
+            p = inst
+        elseif inst:IsA("Model") then
+            p = inst.PrimaryPart
+        end
+        if p and p.Parent and not p.Anchored then
+            local av = p.AssemblyAngularVelocity
+            if av.Magnitude > 1.5 then
+                p.AssemblyAngularVelocity = av.Unit * 1.5
+            end
+        end
+    end
+
+    -- переноска + вращение R (пока держишь)
+    local d = State.Drag
+    if d and d.part and d.part.Parent then
+        if rHeld then
+            d.targetYaw += dt * 3.0
+        end
+        local m = UserInputService:GetMouseLocation()
+        local ray = camera:ViewportPointToRay(m.X, m.Y)
+        local target = ray.Origin + ray.Direction * d.dragDist + d.grabOffset
+        local below = workspace:Raycast(target + Vector3.new(0, 2, 0), Vector3.new(0, -12, 0), d.clampParams)
+        if below then
+            local minY = below.Position.Y + d.part.Size.Y / 2
+            if target.Y < minY then
+                target = Vector3.new(target.X, minY, target.Z)
+            end
+        end
+        local vel = (target - d.part.Position) * 14
+        if vel.Magnitude > 80 then
+            vel = vel.Unit * 80
+        end
+        d.part.AssemblyLinearVelocity = vel
+        d.shownYaw += (d.targetYaw - d.shownYaw) * math.min(dt * 12, 1)
+        d.part.CFrame = CFrame.new(d.part.Position) * CFrame.Angles(0, d.shownYaw, 0)
+        d.part.AssemblyAngularVelocity = Vector3.zero
+    end
+
+    -- скан закрепления + чистка реестров
+    mountScanAcc += dt
+    if mountScanAcc >= 0.3 then
+        mountScanAcc = 0
+        for m in pairs(Door.reg) do
+            if not m.Parent then Door.reg[m] = nil end
+        end
+        for m in pairs(Win.reg) do
+            if not m.Parent then Win.reg[m] = nil end
+        end
+        for m in pairs(Boom.reg) do
+            if not m.Parent then Boom.reg[m] = nil end
+        end
+        for _, inst in ipairs(Fol.construction:GetDescendants()) do
+            if inst:IsA("BasePart") and (not inst.Anchored or inst:GetAttribute("Frozen")) then
+                local t = inst:GetAttribute("ConstructionType")
+                if (t == "Brick" or t == "Board") and not inst:GetAttribute("Mounted") then
+                    if inst.AssemblyLinearVelocity.Magnitude < 0.7
+                        and inst.AssemblyAngularVelocity.Magnitude < 1.2 then
+                        Mount.try(inst)
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- ================= ВВОД =================
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        onMouseDown()
+    elseif input.KeyCode == Enum.KeyCode.R then
+        rHeld = true
+    elseif input.KeyCode == Enum.KeyCode.F then
+        Frz.action()
+    elseif input.KeyCode == Enum.KeyCode.Escape then
+        resetModes()
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        onMouseUp()
+    elseif input.KeyCode == Enum.KeyCode.R then
+        rHeld = false
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch then
+        local g = State.Grind
+        if g and input.Delta then
+            g.yawTarget -= input.Delta.X * 0.012
+        end
+    elseif input.UserInputType == Enum.UserInputType.MouseWheel then
+        Drag.adjustHeight(input.Position.Z * 1.5)
+    end
+end)
+
+-- экранные кнопки (телефон): R / F / X + высота −/+
+if UI.btnR then
+    UI.btnR.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch
+            or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            rHeld = true
+        end
+    end)
+    UI.btnR.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch
+            or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            rHeld = false
+        end
+    end)
+    UI.btnF.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch
+            or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            Frz.action()
+        end
+    end)
+    UI.btnX.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch
+            or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            resetModes()
+        end
+    end)
+    -- левая половина кнопки = ниже, правая = выше
+    UI.btnDown.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch
+            or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            local absPos = input.Position
+            local btnAbs = UI.btnDown.AbsolutePosition
+            local half = UI.btnDown.AbsoluteSize.X / 2
+            if absPos.X - btnAbs.X < half then
+                Drag.adjustHeight(-3)
+            else
+                Drag.adjustHeight(3)
+            end
+        end
+    end)
+end
+
+-- ================= КНОПКИ =================
+for key, btn in pairs(tabButtons) do
+    btn.MouseButton1Click:Connect(function()
+        switchTab(key)
+    end)
+end
+
+Btn.brick.MouseButton1Click:Connect(function()
+    Fab.brick(spawnPosition(4))
+end)
+Btn.board.MouseButton1Click:Connect(function()
+    Fab.board(spawnPosition(4))
+end)
+Btn.wall.MouseButton1Click:Connect(function() Plc.enterMode("Wall") end)
+Btn.door.MouseButton1Click:Connect(function() Plc.enterMode("Door") end)
+Btn.window.MouseButton1Click:Connect(function() Plc.enterMode("Window") end)
+Btn.bigWindow.MouseButton1Click:Connect(function() Plc.enterMode("BigWindow") end)
+Btn.foundation.MouseButton1Click:Connect(function() Plc.enterMode("Foundation") end)
+Btn.ceiling.MouseButton1Click:Connect(function() Plc.enterMode("Ceiling") end)
+Btn.table.MouseButton1Click:Connect(function() Plc.enterMode("Table") end)
+Btn.chair.MouseButton1Click:Connect(function() Plc.enterMode("Chair") end)
+Btn.sofa.MouseButton1Click:Connect(function() Plc.enterMode("Sofa") end)
+
+Btn.cement.MouseButton1Click:Connect(function()
+    if State.Mode == "Cement" then
+        resetModes()
+    else
+        resetModes()
+        State.Mode = "Cement"
+        Adh.activate("Cement")
+        updateAdhesiveButtons()
+        showHint("ЦЕМЕНТ: ЗАЖМИ И ВОДИ — КИРПИЧИ/ДОСКИ КЛЕЯТСЯ (и друг к другу)")
+    end
+end)
+
+Btn.glue.MouseButton1Click:Connect(function()
+    if State.Mode == "Glue" then
+        resetModes()
+    else
+        resetModes()
+        State.Mode = "Glue"
+        Adh.activate("Glue")
+        updateAdhesiveButtons()
+        showHint("КЛЕЙ: тонкая полоса; КЛИК ПО РАЗБИТОМУ ОКНУ — вставит стекло")
+    end
+end)
+
+Btn.cutter.MouseButton1Click:Connect(function() selectTool("Cutter") end)
+Btn.grinder.MouseButton1Click:Connect(function() selectTool("Grinder") end)
+Btn.wallpaper.MouseButton1Click:Connect(function() selectTool("Wallpaper") end)
+Btn.carpet.MouseButton1Click:Connect(function() selectTool("Carpet") end)
+Btn.paint.MouseButton1Click:Connect(function() selectTool("Paint") end)
+Btn.hammer.MouseButton1Click:Connect(function() selectTool("Hammer") end)
+Btn.sledge.MouseButton1Click:Connect(function() selectTool("Sledge") end)
+Btn.rope.MouseButton1Click:Connect(function() selectTool("Rope") end)
+Btn.sponge.MouseButton1Click:Connect(function() selectTool("Sponge") end)
+Btn.c4.MouseButton1Click:Connect(function() selectTool("C4") end)
+Btn.wire.MouseButton1Click:Connect(function() selectTool("Wire") end)
+Btn.pipe.MouseButton1Click:Connect(function() selectTool("Pipe") end)
+
+Btn.cleanup.MouseButton1Click:Connect(function()
+    State.CleanupEnabled = not State.CleanupEnabled
+    updateCleanupButton()
+    if State.CleanupEnabled then
+        showHint("УБОРКА ВКЛЮЧЕНА: обломки исчезают через 10 секунд")
+    else
+        showHint("УБОРКА ВЫКЛЮЧЕНА: обломки остаются")
+    end
+end)
+
+player.CharacterAdded:Connect(function()
+    task.wait(0.2)
+    resetModes()
+end)
+
+-- начальное состояние
+switchTab("Bricks")
+updatePaletteLocal()
+updateCleanupButton()
